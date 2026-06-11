@@ -1,0 +1,14 @@
+{
+  "name": "pdfpager-api",
+  "version": "1.0.0",
+  "description": "Rendezvous backend for PDFPager mobile cover scanning",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "qrcode": "^1.5.4"
+  }
+}
