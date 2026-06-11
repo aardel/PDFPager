@@ -11,7 +11,20 @@ PDFPager is a desktop tool for digitising physical paper archives. The typical w
 5. Tag each page (or group of pages) with a document label (e.g. `APPLICATION_211013`)
 6. Export — produces one PDF file per unique tag, saved to a chosen output folder
 
-The app runs on Windows as an Electron desktop application. There is no server, no cloud, no login.
+The app runs two ways:
+
+1. **Windows desktop** — Electron application (original form)
+2. **Web app** — the same React UI deployed as a static site at
+   `https://pdf.myalbum.world` (alternates: `pdf.aarondelia.com`,
+   `www.aarondelia.com`), served by the shared edge-nginx on the
+   servicelc server. In Chrome/Edge, export writes split PDFs straight
+   into a user-chosen folder via the File System Access API
+   (`src/utils/fileSystem.ts`); Safari/Firefox fall back to per-file
+   downloads. No login.
+
+The only backend is `server/` (`pdfpager-api` container) — a tiny
+rendezvous service for mobile cover scanning (see "Scan API" below).
+Everything else is client-side.
 
 ---
 
@@ -48,6 +61,8 @@ Output lands in `dist-electron/`.
 PDFPager/
 ├── main.js              Electron main process (window creation, IPC, file save dialog)
 ├── preload.js           Electron preload — exposes window.electronAPI to the renderer
+├── server/              pdfpager-api: scan rendezvous backend (Express, Dockerfile)
+├── public/              Static assets copied verbatim into dist/ (scan.html lives here)
 ├── src/
 │   ├── main.tsx         React entry point
 │   ├── App.tsx          Root component — file loading, export orchestration, preset persistence
@@ -61,7 +76,9 @@ PDFPager/
 │   │   └── TagOrganizer.tsx      Inline panel for creating / editing tag presets
 │   └── utils/
 │       ├── pdfProcessor.ts       PDF load, blank detection, export/split logic
-│       └── tagUtils.ts           Tag template parsing (***hint*** syntax)
+│       ├── tagUtils.ts           Tag template parsing (***hint*** syntax)
+│       ├── sessionStorage.ts     Per-file session persistence (tags/order/names)
+│       └── fileSystem.ts         File System Access API (Chrome web export)
 ```
 
 ---
@@ -129,6 +146,14 @@ Top-level orchestrator. Owns:
 - `presets` — ordered list of tag names (plain and templates)
 - `outputDirectory` — destination folder path
 - Export state (`isExporting`, `exportProgress`)
+- `queue` / `activeKey` — **multi-file queue**: several PDFs open as header
+  chips; only the active file's bytes are in memory (queued files are just
+  `File` handles). Switching saves/restores per-file sessions.
+- **Undo/redo**: history stack (max 100) of `pages` snapshots. Ctrl+Z /
+  Ctrl+Shift+Z / Ctrl+Y + toolbar buttons. User mutations go through
+  `handleSetPages` (records history); blank auto-detection uses
+  `handleSetPagesSilent` (no history). Restored snapshots re-merge current
+  `isBlank` flags.
 
 The `handleExport(targetTag?)` function calls `processAndSplitPDF` then either uses `window.electronAPI.savePDFs` (Electron) or triggers browser downloads (web fallback).
 
@@ -223,12 +248,47 @@ Tag colour is determined by the preset's **index in the presets array** — same
 
 ---
 
+## Scan API (mobile cover scanning)
+
+Hard covers are photographed with a phone. The desktop shows a QR code /
+short URL; the phone opens `/scan.html`, captures + flattens the cover,
+and uploads it; the desktop polls and inserts the result.
+
+Backend: `server/index.js` → `pdfpager-api` container (Express,
+in-memory sessions, 15-min TTL, no DB). nginx proxies `/api/scan/` and
+`/s/` on the PDFPager vhosts (variable upstream so nginx tolerates the
+container being down).
+
+| Endpoint | Who | Purpose |
+|---|---|---|
+| `POST /api/scan/session` | desktop | create session → token, 5-char code, short URL, QR data URL |
+| `GET /s/:code` | phone | short URL → 302 to `/scan.html?token=…` |
+| `POST /api/scan/session/:token/connected` | phone | presence ping ("phone connected" UI) |
+| `POST /api/scan/upload/:token` | phone | multipart `image` (JPEG/PNG/WEBP, 10 MB cap) |
+| `GET /api/scan/session/:token` | desktop | poll: `connected`, `hasImage` |
+| `GET /api/scan/session/:token/image` | desktop | fetch uploaded image |
+| `DELETE /api/scan/session/:token` | desktop | consume/close session |
+
+Corner detection + perspective flatten run **on the phone** in
+`public/scan.html` (vanilla JS, ported from the tripplanner travel app:
+grayscale → Gaussian blur → Sobel edges → bounding quad → draggable
+corners → inverse-bilinear flatten).
+
+Cover insertion model (desktop): the flattened image is appended via
+pdf-lib as a real page at the **end** of the active buffer (so no
+existing `pageIndex` shifts), and its `ProcessedPage` entry is inserted
+at the **top of the chosen tag section** in the array — array order is
+export order, so the cover exports on top. v1: covers do not persist
+across file close (re-scan after reopening is acceptable).
+
 ## Known Limitations / Future Work
 
 - **Export filename casing**: tags are lowercased for filenames. A tag `APPLICATION_211013` exports as `application_211013.pdf`. Change `processAndSplitPDF` to preserve casing if needed.
-- **No undo**: page operations (delete, rotate, tag) are immediate. There is no history stack.
 - **Drag-and-drop only in Pages view**: the Groups sidebar view is read-only; reordering requires switching to Pages view.
-- **Single file at a time**: only one PDF can be open. Loading a new file discards the current session.
 - **No password-protected PDFs**: `pdfjs-dist` will fail on encrypted files; the app shows a generic error alert.
-- **Large PDFs (200+ pages)**: thumbnails render lazily so load is fine, but the `ScrollablePreview` keeps all rendered canvases in memory. Very large documents may use significant RAM.
+- **Scanned covers don't persist (v1)**: closing a file discards inserted covers; only tags/order survive in the session. v2 plan: store cover images in IndexedDB keyed by fileKey.
 - **`LargePagePreview.tsx`** is no longer used in the main flow (replaced by `ScrollablePreview`) but is kept as it may be useful for a single-page mode.
+
+Resolved (2026-06): ~~No undo~~ (history stack), ~~single file at a
+time~~ (multi-file queue), ~~large-PDF RAM~~ (off-screen canvases are
+released and re-rendered on approach).

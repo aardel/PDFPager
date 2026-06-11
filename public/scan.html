@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>PDFPager — Scan Cover</title>
+<style>
+  :root {
+    --bg: #F2F2F7;
+    --card: #FFFFFF;
+    --accent: #007AFF;
+    --danger: #FF3B30;
+    --ok: #34C759;
+    --text: #1C1C1E;
+    --text2: #6E6E73;
+    --sep: #E5E5EA;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column;
+    overscroll-behavior: none;
+  }
+  header {
+    padding: 12px 16px; background: var(--card); border-bottom: 1px solid var(--sep);
+    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  }
+  header .logo { width: 24px; height: 24px; border-radius: 6px; background: var(--accent);
+    color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
+  header b { font-size: 15px; }
+  header span { font-size: 13px; color: var(--text2); margin-left: auto; }
+  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  .stage { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+  .stage.active { display: flex; }
+  .center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; }
+  .center h2 { font-size: 19px; }
+  .center p { font-size: 14px; color: var(--text2); max-width: 320px; line-height: 1.5; }
+  .bar {
+    flex-shrink: 0; display: flex; gap: 10px; padding: 14px 16px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+    background: var(--card); border-top: 1px solid var(--sep);
+  }
+  button {
+    flex: 1; border: none; border-radius: 12px; padding: 14px 10px;
+    font-size: 16px; font-weight: 600; font-family: inherit; cursor: pointer;
+  }
+  .primary { background: var(--accent); color: #fff; }
+  .primary:disabled { opacity: 0.5; }
+  .secondary { background: var(--bg); color: var(--text); border: 1px solid var(--sep); }
+  .viewport { flex: 1; position: relative; overflow: hidden; background: #111; display: flex; align-items: center; justify-content: center; }
+  video { width: 100%; height: 100%; object-fit: cover; }
+  #editCanvas, #previewImg { max-width: 100%; max-height: 100%; touch-action: none; }
+  #previewImg { background: #fff; }
+  .hint {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.65); color: #fff; font-size: 13px;
+    padding: 6px 14px; border-radius: 99px; white-space: nowrap; pointer-events: none;
+  }
+  .spinner {
+    width: 28px; height: 28px; border: 3px solid var(--sep); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .big { font-size: 44px; }
+  .err { color: var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">P</div><b>Scan Cover</b><span id="status">connecting…</span>
+</header>
+<main>
+
+  <div id="stage-loading" class="stage active">
+    <div class="center"><div class="spinner"></div><p>Checking scan session…</p></div>
+  </div>
+
+  <div id="stage-error" class="stage">
+    <div class="center">
+      <div class="big">⚠️</div>
+      <h2 class="err">Link expired</h2>
+      <p id="errorMsg">This scan link is no longer valid. Generate a new one from PDFPager on the desktop.</p>
+    </div>
+  </div>
+
+  <div id="stage-start" class="stage">
+    <div class="center">
+      <div class="big">📷</div>
+      <h2>Photograph the cover</h2>
+      <p>Lay the cover flat with good light. Fill the frame as much as possible — you can fine-tune the corners after the shot.</p>
+    </div>
+    <div class="bar">
+      <button class="secondary" onclick="pickFromGallery()">Gallery</button>
+      <button class="primary" onclick="startCamera()">Open camera</button>
+    </div>
+    <input id="galleryInput" type="file" accept="image/*" capture="environment" style="display:none" onchange="onGalleryPick(event)" />
+  </div>
+
+  <div id="stage-camera" class="stage">
+    <div class="viewport">
+      <video id="video" autoplay playsinline muted></video>
+      <div class="hint">Fill the frame with the cover</div>
+    </div>
+    <div class="bar">
+      <button class="secondary" onclick="stopCamera(); show('start')">Back</button>
+      <button class="primary" onclick="capturePhoto()">Capture</button>
+    </div>
+  </div>
+
+  <div id="stage-edit" class="stage">
+    <div class="viewport">
+      <canvas id="editCanvas"></canvas>
+      <div class="hint">Drag the corners to match the cover edges</div>
+    </div>
+    <div class="bar">
+      <button class="secondary" onclick="retake()">Retake</button>
+      <button class="secondary" onclick="autoDetect()">Auto-detect</button>
+      <button class="primary" onclick="flatten()">Straighten ▸</button>
+    </div>
+  </div>
+
+  <div id="stage-preview" class="stage">
+    <div class="viewport" style="background: var(--bg);">
+      <img id="previewImg" alt="Flattened preview" />
+    </div>
+    <div class="bar">
+      <button class="secondary" onclick="show('edit'); drawEdit()">Adjust corners</button>
+      <button id="uploadBtn" class="primary" onclick="uploadScan()">Upload to PDFPager</button>
+    </div>
+  </div>
+
+  <div id="stage-done" class="stage">
+    <div class="center">
+      <div class="big">✅</div>
+      <h2>Sent to PDFPager</h2>
+      <p>The cover is on its way to the desktop. You can scan another page or close this tab.</p>
+    </div>
+    <div class="bar">
+      <button class="primary" onclick="resetForNext()">Scan another</button>
+    </div>
+  </div>
+
+</main>
+<script>
+'use strict';
+
+/* ============================== session ============================== */
+
+const token = new URLSearchParams(location.search).get('token') || '';
+const statusEl = document.getElementById('status');
+
+function show(name) {
+  document.querySelectorAll('.stage').forEach(s => s.classList.remove('active'));
+  document.getElementById('stage-' + name).classList.add('active');
+}
+
+function fail(msg) {
+  if (msg) document.getElementById('errorMsg').textContent = msg;
+  statusEl.textContent = 'expired';
+  show('error');
+}
+
+async function init() {
+  if (!token) return fail('Missing scan token. Open the link from the PDFPager desktop again.');
+  try {
+    const r = await fetch(`/api/scan/session/${token}/connected`, { method: 'POST' });
+    if (!r.ok) return fail();
+    statusEl.textContent = 'connected';
+    show('start');
+  } catch {
+    fail('Could not reach the server. Check your connection and reload.');
+  }
+}
+init();
+
+/* ============================== camera ============================== */
+
+const video = document.getElementById('video');
+let stream = null;
+
+// Full-resolution captured photo (image coordinates are relative to this).
+const photo = document.createElement('canvas');
+const photoCtx = photo.getContext('2d', { willReadFrequently: true });
+
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 3072 }, height: { ideal: 3072 } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    show('camera');
+  } catch (e) {
+    // Permission denied or no camera — gallery/file capture still works.
+    alert('Camera unavailable (' + e.name + '). Use Gallery instead.');
+  }
+}
+
+function stopCamera() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  video.srcObject = null;
+}
+
+function capturePhoto() {
+  if (!video.videoWidth) return;
+  photo.width = video.videoWidth;
+  photo.height = video.videoHeight;
+  photoCtx.drawImage(video, 0, 0);
+  stopCamera();
+  enterEdit();
+}
+
+function pickFromGallery() { document.getElementById('galleryInput').click(); }
+
+function onGalleryPick(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const img = new Image();
+  img.onload = () => {
+    // Cap the working resolution; 12MP+ originals only slow everything down.
+    const MAX = 3000;
+    const k = Math.min(1, MAX / Math.max(img.width, img.height));
+    photo.width = Math.round(img.width * k);
+    photo.height = Math.round(img.height * k);
+    photoCtx.drawImage(img, 0, 0, photo.width, photo.height);
+    URL.revokeObjectURL(img.src);
+    enterEdit();
+  };
+  img.onerror = () => alert('Could not read that image.');
+  img.src = URL.createObjectURL(file);
+}
+
+/* ====================== corner detection (ported) ====================
+   Same pipeline as the travel-expenses receipt scanner: grayscale →
+   3×3 Gaussian blur → Sobel edges → bounding quad. Runs on a ≤800px
+   downscale for speed; corners are scaled back to photo coordinates. */
+
+function detectCorners() {
+  const MAXD = 800;
+  const k = Math.min(1, MAXD / Math.max(photo.width, photo.height));
+  const w = Math.max(2, Math.round(photo.width * k));
+  const h = Math.max(2, Math.round(photo.height * k));
+  const small = document.createElement('canvas');
+  small.width = w; small.height = h;
+  const sctx = small.getContext('2d', { willReadFrequently: true });
+  sctx.drawImage(photo, 0, 0, w, h);
+  const data = sctx.getImageData(0, 0, w, h).data;
+
+  // grayscale
+  const gray = new Uint8Array(w * h);
+  for (let i = 0; i < data.length; i += 4) {
+    gray[i >> 2] = (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) | 0;
+  }
+
+  // 3×3 gaussian
+  const blur = new Uint8Array(w * h);
+  const gk = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      let s = 0, ki = 0;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++)
+          s += gray[(y + dy) * w + (x + dx)] * gk[ki++];
+      blur[y * w + x] = (s / 16) | 0;
+    }
+  }
+
+  // sobel
+  const edges = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i00 = (y - 1) * w + x - 1, i01 = i00 + 1, i02 = i00 + 2;
+      const i10 = y * w + x - 1, i12 = i10 + 2;
+      const i20 = (y + 1) * w + x - 1, i21 = i20 + 1, i22 = i20 + 2;
+      const gx = -blur[i00] + blur[i02] - 2 * blur[i10] + 2 * blur[i12] - blur[i20] + blur[i22];
+      const gy = -blur[i00] - 2 * blur[i01] - blur[i02] + blur[i20] + 2 * blur[i21] + blur[i22];
+      edges[y * w + x] = (gx * gx + gy * gy) > 2500 ? 255 : 0;
+    }
+  }
+
+  // bounding quad
+  let top = -1, bottom = -1, left = -1, right = -1;
+  outerT: for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (edges[y * w + x]) { top = y; break outerT; }
+  outerB: for (let y = h - 1; y >= 0; y--) for (let x = 0; x < w; x++) if (edges[y * w + x]) { bottom = y; break outerB; }
+  outerL: for (let x = 0; x < w; x++) for (let y = 0; y < h; y++) if (edges[y * w + x]) { left = x; break outerL; }
+  outerR: for (let x = w - 1; x >= 0; x--) for (let y = 0; y < h; y++) if (edges[y * w + x]) { right = x; break outerR; }
+
+  if (top < 0 || bottom <= top || right <= left) return null;
+  const pad = 6;
+  const inv = 1 / k;
+  const X = v => Math.max(0, Math.min(photo.width, v * inv));
+  const Y = v => Math.max(0, Math.min(photo.height, v * inv));
+  return [
+    { x: X(left - pad), y: Y(top - pad) },
+    { x: X(right + pad), y: Y(top - pad) },
+    { x: X(right + pad), y: Y(bottom + pad) },
+    { x: X(left - pad), y: Y(bottom + pad) },
+  ];
+}
+
+/* =========================== corner editor =========================== */
+
+const editCanvas = document.getElementById('editCanvas');
+const editCtx = editCanvas.getContext('2d');
+let corners = [];        // photo coordinates, order: TL TR BR BL
+let dispScale = 1;       // editCanvas px per photo px
+let dragIdx = -1;
+
+function defaultCorners() {
+  const mx = photo.width * 0.06, my = photo.height * 0.06;
+  return [
+    { x: mx, y: my },
+    { x: photo.width - mx, y: my },
+    { x: photo.width - mx, y: photo.height - my },
+    { x: mx, y: photo.height - my },
+  ];
+}
+
+function enterEdit() {
+  corners = detectCorners() || defaultCorners();
+  show('edit');
+  requestAnimationFrame(drawEdit);
+}
+
+function autoDetect() {
+  corners = detectCorners() || defaultCorners();
+  drawEdit();
+}
+
+function sizeEditCanvas() {
+  const vp = editCanvas.parentElement.getBoundingClientRect();
+  const k = Math.min((vp.width - 8) / photo.width, (vp.height - 8) / photo.height);
+  dispScale = k;
+  const dpr = window.devicePixelRatio || 1;
+  editCanvas.width = Math.round(photo.width * k * dpr);
+  editCanvas.height = Math.round(photo.height * k * dpr);
+  editCanvas.style.width = Math.round(photo.width * k) + 'px';
+  editCanvas.style.height = Math.round(photo.height * k) + 'px';
+  editCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function drawEdit() {
+  sizeEditCanvas();
+  const k = dispScale;
+  editCtx.drawImage(photo, 0, 0, photo.width * k, photo.height * k);
+
+  // dim outside the quad
+  editCtx.save();
+  editCtx.fillStyle = 'rgba(0,0,0,0.45)';
+  editCtx.beginPath();
+  editCtx.rect(0, 0, photo.width * k, photo.height * k);
+  editCtx.moveTo(corners[0].x * k, corners[0].y * k);
+  for (let i = 3; i >= 0; i--) editCtx.lineTo(corners[i].x * k, corners[i].y * k);
+  editCtx.closePath();
+  editCtx.fill('evenodd');
+  editCtx.restore();
+
+  // quad outline
+  editCtx.strokeStyle = '#007AFF';
+  editCtx.lineWidth = 2;
+  editCtx.beginPath();
+  editCtx.moveTo(corners[0].x * k, corners[0].y * k);
+  for (let i = 1; i < 4; i++) editCtx.lineTo(corners[i].x * k, corners[i].y * k);
+  editCtx.closePath();
+  editCtx.stroke();
+
+  // handles
+  for (const c of corners) {
+    editCtx.beginPath();
+    editCtx.arc(c.x * k, c.y * k, 14, 0, Math.PI * 2);
+    editCtx.fillStyle = 'rgba(0,122,255,0.25)';
+    editCtx.fill();
+    editCtx.beginPath();
+    editCtx.arc(c.x * k, c.y * k, 7, 0, Math.PI * 2);
+    editCtx.fillStyle = '#007AFF';
+    editCtx.fill();
+    editCtx.strokeStyle = '#fff';
+    editCtx.lineWidth = 2;
+    editCtx.stroke();
+  }
+}
+
+function canvasPoint(ev) {
+  const r = editCanvas.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) / dispScale, y: (ev.clientY - r.top) / dispScale };
+}
+
+editCanvas.addEventListener('pointerdown', (ev) => {
+  const p = canvasPoint(ev);
+  const grabR = 44 / dispScale; // generous touch target
+  let best = -1, bestD = Infinity;
+  corners.forEach((c, i) => {
+    const d = Math.hypot(c.x - p.x, c.y - p.y);
+    if (d < grabR && d < bestD) { best = i; bestD = d; }
+  });
+  if (best >= 0) {
+    dragIdx = best;
+    editCanvas.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  }
+});
+editCanvas.addEventListener('pointermove', (ev) => {
+  if (dragIdx < 0) return;
+  const p = canvasPoint(ev);
+  corners[dragIdx] = {
+    x: Math.max(0, Math.min(photo.width, p.x)),
+    y: Math.max(0, Math.min(photo.height, p.y)),
+  };
+  drawEdit();
+  ev.preventDefault();
+});
+const endDrag = () => { dragIdx = -1; };
+editCanvas.addEventListener('pointerup', endDrag);
+editCanvas.addEventListener('pointercancel', endDrag);
+window.addEventListener('resize', () => {
+  if (document.getElementById('stage-edit').classList.contains('active')) drawEdit();
+});
+
+function retake() {
+  show('start');
+}
+
+/* ===================== flatten (inverse bilinear) =====================
+   Ported from the travel app, upgraded with bilinear pixel sampling
+   (the original used nearest-neighbor) and a 2400px output cap. */
+
+let flatBlob = null;
+
+function flatten() {
+  const dist = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
+  let outW = Math.round(Math.max(dist(corners[0], corners[1]), dist(corners[3], corners[2])));
+  let outH = Math.round(Math.max(dist(corners[0], corners[3]), dist(corners[1], corners[2])));
+  if (outW < 8 || outH < 8) { alert('Corners are too close together.'); return; }
+  const cap = 2400;
+  const k = Math.min(1, cap / Math.max(outW, outH));
+  outW = Math.round(outW * k);
+  outH = Math.round(outH * k);
+
+  const src = photoCtx.getImageData(0, 0, photo.width, photo.height);
+  const sd = src.data, sw = photo.width, sh = photo.height;
+  const dst = new ImageData(outW, outH);
+  const dd = dst.data;
+  const [c0, c1, c2, c3] = corners;
+
+  for (let y = 0; y < outH; y++) {
+    const v = y / (outH - 1);
+    const lx = (1 - v) * c0.x + v * c3.x, ly = (1 - v) * c0.y + v * c3.y;
+    const rx = (1 - v) * c1.x + v * c2.x, ry = (1 - v) * c1.y + v * c2.y;
+    for (let x = 0; x < outW; x++) {
+      const u = x / (outW - 1);
+      const sx = lx + u * (rx - lx);
+      const sy = ly + u * (ry - ly);
+      const x0 = Math.floor(sx), y0 = Math.floor(sy);
+      const di = (y * outW + x) * 4;
+      if (x0 < 0 || y0 < 0 || x0 >= sw - 1 || y0 >= sh - 1) {
+        dd[di] = dd[di + 1] = dd[di + 2] = 255; dd[di + 3] = 255;
+        continue;
+      }
+      const fx = sx - x0, fy = sy - y0;
+      const i00 = (y0 * sw + x0) * 4, i01 = i00 + 4;
+      const i10 = i00 + sw * 4, i11 = i10 + 4;
+      for (let c = 0; c < 3; c++) {
+        dd[di + c] =
+          sd[i00 + c] * (1 - fx) * (1 - fy) +
+          sd[i01 + c] * fx * (1 - fy) +
+          sd[i10 + c] * (1 - fx) * fy +
+          sd[i11 + c] * fx * fy;
+      }
+      dd[di + 3] = 255;
+    }
+  }
+
+  const out = document.createElement('canvas');
+  out.width = outW; out.height = outH;
+  out.getContext('2d').putImageData(dst, 0, 0);
+  out.toBlob((blob) => {
+    flatBlob = blob;
+    document.getElementById('previewImg').src = URL.createObjectURL(blob);
+    show('preview');
+  }, 'image/jpeg', 0.92);
+}
+
+/* =============================== upload =============================== */
+
+async function uploadScan() {
+  if (!flatBlob) return;
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+  try {
+    const fd = new FormData();
+    fd.append('image', flatBlob, 'cover.jpg');
+    const r = await fetch(`/api/scan/upload/${token}`, { method: 'POST', body: fd });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.success) throw new Error(j.error || `Upload failed (${r.status})`);
+    statusEl.textContent = 'sent ✓';
+    show('done');
+  } catch (e) {
+    alert(e.message || 'Upload failed. Check your connection and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Upload to PDFPager';
+  }
+}
+
+function resetForNext() {
+  flatBlob = null;
+  corners = [];
+  show('start');
+}
+</script>
+</body>
+</html>
