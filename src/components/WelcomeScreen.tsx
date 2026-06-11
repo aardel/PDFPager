@@ -2,10 +2,13 @@ import React, { useState, useRef } from 'react';
 import { UploadCloud } from 'lucide-react';
 
 interface WelcomeScreenProps {
-  onFileSelect: (file: File) => void;
+  onFilesSelect: (files: File[]) => void;
 }
 
-export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFileSelect }) => {
+const isPdf = (f: File) =>
+  f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf');
+
+export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFilesSelect }) => {
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -19,15 +22,14 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFileSelect }) =>
     e.preventDefault();
     e.stopPropagation();
     setIsDragActive(false);
-    const file = e.dataTransfer.files[0];
-    if (file && (file.type === 'application/pdf' || file.name.endsWith('.pdf'))) {
-      onFileSelect(file);
-    }
+    const files = Array.from(e.dataTransfer.files).filter(isPdf);
+    if (files.length > 0) onFilesSelect(files);
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) onFileSelect(file);
+    const files = Array.from(e.target.files ?? []).filter(isPdf);
+    if (files.length > 0) onFilesSelect(files);
+    e.target.value = '';
   };
 
   return (
@@ -35,7 +37,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFileSelect }) =>
       <div className="welcome-card fade-in">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
-            Open a scanned PDF
+            Open scanned PDFs
           </h1>
           <p style={{ fontSize: 14, color: 'var(--text-secondary)', textAlign: 'center', maxWidth: 300, lineHeight: 1.6 }}>
             Import your scanner output to clean, tag, and export pages by document section.
@@ -50,12 +52,12 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFileSelect }) =>
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
         >
-          <input ref={fileInputRef} type="file" className="hidden" accept=".pdf" onChange={handleChange} style={{ display: 'none' }} />
+          <input ref={fileInputRef} type="file" className="hidden" accept=".pdf" multiple onChange={handleChange} style={{ display: 'none' }} />
           <div className="drop-zone-icon">
             <UploadCloud size={22} />
           </div>
-          <span className="drop-zone-title">Drop PDF here</span>
-          <span className="drop-zone-sub">or click to browse</span>
+          <span className="drop-zone-title">Drop PDFs here</span>
+          <span className="drop-zone-sub">or click to browse — multiple files become a queue</span>
         </div>
       </div>
     </div>

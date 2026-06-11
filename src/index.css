@@ -166,6 +166,62 @@ input[type="text"]:focus {
   text-overflow: ellipsis;
 }
 
+/* ===== File queue (multi-file) ===== */
+.queue-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 64vw;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 2px 0;
+}
+.queue-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-hover);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-full);
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.queue-chip:hover {
+  border-color: var(--text-tertiary);
+}
+.queue-chip.active {
+  background: var(--bg-card);
+  border-color: var(--accent);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.queue-chip-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.queue-chip-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  padding: 1px;
+  color: var(--text-tertiary);
+}
+.queue-chip-close:hover {
+  color: var(--danger);
+  background: rgba(255, 59, 48, 0.12);
+}
+.queue-chip-add {
+  color: var(--accent);
+  border-style: dashed;
+}
+
 /* ===== Buttons ===== */
 .btn {
   display: inline-flex;

@@ -44,6 +44,8 @@ import {
   ChevronRight,
   List,
   LayoutList,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 
 interface WorkspaceProps {
@@ -54,6 +56,12 @@ interface WorkspaceProps {
   exportNames: Record<string, string>;
   outputDirectory: string;
   onSetPages: (pages: ProcessedPage[]) => void;
+  /** Updates pages without recording undo history (blank auto-detection). */
+  onSetPagesSilent: (pages: ProcessedPage[]) => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
   onSetPresets: (presets: string[]) => void;
   onSetExportNames: (names: Record<string, string>) => void;
   onSetOutputDirectory: (dir: string) => void;
@@ -75,6 +83,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   exportNames,
   outputDirectory,
   onSetPages,
+  onSetPagesSilent,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
   onSetPresets,
   onSetExportNames,
   onSetOutputDirectory,
@@ -564,7 +577,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                     isSplitActive={splitIndex === idx}
                     isSelected={selectedIds.has(page.id)}
                     onToggleDelete={() => toggleDelete(page.id)}
-                    onMarkBlank={(isBlank) => onSetPages(pages.map(p => p.id === page.id ? { ...p, isBlank } : p))}
+                    onMarkBlank={(isBlank) => onSetPagesSilent(pages.map(p => p.id === page.id ? { ...p, isBlank } : p))}
                     onClick={(e) => handleThumbClick(idx, e)}
                     onContextMenu={(e) => handleThumbContextMenu(idx, e)}
                   />
@@ -647,7 +660,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                           isSplitActive={splitIndex === idx}
                           isSelected={selectedIds.has(page.id)}
                           onToggleDelete={() => toggleDelete(page.id)}
-                          onMarkBlank={(isBlank) => onSetPages(pages.map(p => p.id === page.id ? { ...p, isBlank } : p))}
+                          onMarkBlank={(isBlank) => onSetPagesSilent(pages.map(p => p.id === page.id ? { ...p, isBlank } : p))}
                           onClick={(e) => handleThumbClick(idx, e)}
                           onContextMenu={(e) => handleThumbContextMenu(idx, e)}
                         />
@@ -777,6 +790,23 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
           {/* Right: page actions + split toggle */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              className="btn-icon"
+              title="Undo (Ctrl+Z)"
+              onClick={onUndo}
+              disabled={!canUndo}
+            >
+              <Undo2 size={15} />
+            </button>
+            <button
+              className="btn-icon"
+              title="Redo (Ctrl+Shift+Z)"
+              onClick={onRedo}
+              disabled={!canRedo}
+            >
+              <Redo2 size={15} />
+            </button>
+            <div style={{ width: 1, height: 18, background: 'var(--separator)' }} />
             <button
               className="btn-icon"
               title="Rotate counter-clockwise"

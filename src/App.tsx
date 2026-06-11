@@ -10,7 +10,7 @@ import {
   pickOutputDirectory,
   writeFilesToDirectory,
 } from './utils/fileSystem';
-import { FileText } from 'lucide-react';
+import { FileText, X, Plus } from 'lucide-react';
 
 interface ElectronAPI {
   selectDirectory: () => Promise<string | null>;
@@ -26,6 +26,13 @@ declare global {
   }
 }
 
+// A queued file holds only the File handle — bytes are read lazily when the
+// file becomes active, so a long scanning queue doesn't pile up ArrayBuffers.
+interface QueueItem {
+  file: File;
+  key: string;
+}
+
 export default function App() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
@@ -36,6 +43,91 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
   const activeFileKeyRef = useRef<string | null>(null);
+
+  // Multi-file queue. The active file's buffer/pages live in the states
+  // above; everything else is just File handles until switched to.
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  // Monotonic token so a slow FileReader can't clobber a newer switch.
+  const loadTokenRef = useRef(0);
+  const addInputRef = useRef<HTMLInputElement>(null);
+
+  // Undo/redo history for page mutations (delete, rotate, tag, reorder).
+  // Snapshots are just the pages array (small metadata objects, no canvases),
+  // so keeping up to MAX_HISTORY of them is cheap. Export-name edits are
+  // per-keystroke inputs and deliberately not tracked.
+  const MAX_HISTORY = 100;
+  const historyRef = useRef<ProcessedPage[][]>([]);
+  const futureRef = useRef<ProcessedPage[][]>([]);
+  // Ref mirror of `pages` so stable callbacks can read the latest array
+  // without stale closures (and without side effects inside setState updaters).
+  const pagesRef = useRef<ProcessedPage[]>([]);
+  useEffect(() => { pagesRef.current = pages; }, [pages]);
+
+  const resetHistory = () => {
+    historyRef.current = [];
+    futureRef.current = [];
+  };
+
+  // User-initiated page changes go through here and record history.
+  const handleSetPages = useCallback((next: ProcessedPage[]) => {
+    historyRef.current.push(pagesRef.current);
+    if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
+    futureRef.current = [];
+    setPages(next);
+  }, []);
+
+  // Blank auto-detection is a render side-effect, not a user action — it
+  // updates pages without polluting the history stack.
+  const handleSetPagesSilent = useCallback((next: ProcessedPage[]) => {
+    setPages(next);
+  }, []);
+
+  // isBlank flags are detected lazily as thumbnails render, possibly after a
+  // snapshot was taken. Carry the freshest flags into restored snapshots so
+  // undo doesn't make "blank" badges vanish.
+  const withCurrentBlanks = (snap: ProcessedPage[], current: ProcessedPage[]) => {
+    const blanks = new Map(current.map(p => [p.id, p.isBlank]));
+    return snap.map(p => {
+      const b = blanks.get(p.id);
+      return b !== undefined && b !== p.isBlank ? { ...p, isBlank: b } : p;
+    });
+  };
+
+  const undo = useCallback(() => {
+    const prev = historyRef.current.pop();
+    if (!prev) return;
+    futureRef.current.push(pagesRef.current);
+    setPages(withCurrentBlanks(prev, pagesRef.current));
+  }, []);
+
+  const redo = useCallback(() => {
+    const next = futureRef.current.pop();
+    if (!next) return;
+    historyRef.current.push(pagesRef.current);
+    setPages(withCurrentBlanks(next, pagesRef.current));
+  }, []);
+
+  // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl+Y = redo. Skipped while
+  // typing in inputs so native text-field undo keeps working.
+  useEffect(() => {
+    if (!pdfFile) return;
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((k === 'z' && e.shiftKey) || k === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pdfFile, undo, redo]);
 
   useEffect(() => {
     const saved = localStorage.getItem('pdf_pager_presets');
@@ -79,12 +171,22 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [pages, exportNames, pdfFile]);
 
-  const handleFileSelect = (file: File) => {
+  const saveActiveSession = () => {
+    if (pdfFile && activeFileKeyRef.current && pages.length > 0) {
+      saveSession(activeFileKeyRef.current, pdfFile.name, pages, exportNames);
+    }
+  };
+
+  // Reads a file's bytes and makes it the active document. Per-file tags and
+  // progress are restored from the saved session (keyed by file metadata).
+  const loadFile = (file: File) => {
+    const token = ++loadTokenRef.current;
     const reader = new FileReader();
     reader.onload = async () => {
       try {
         const buffer = reader.result as ArrayBuffer;
         const pageCount = await getPdfPageCount(buffer);
+        if (token !== loadTokenRef.current) return; // superseded by a newer switch
         const fileKey = getFileKey(file);
         const saved = loadSession(fileKey, pageCount);
 
@@ -100,34 +202,79 @@ export default function App() {
         );
 
         activeFileKeyRef.current = fileKey;
+        resetHistory();
         setPdfBuffer(buffer);
         setPages(initialPages);
         setExportNames(saved?.exportNames ?? {});
         setPdfFile(file);
+        setActiveKey(fileKey);
       } catch {
-        alert('Could not parse the selected PDF file. Please ensure it is a valid, unencrypted PDF.');
+        alert(`Could not parse "${file.name}". Please ensure it is a valid, unencrypted PDF.`);
+        setQueue(q => q.filter(i => i.key !== getFileKey(file)));
       }
     };
     reader.readAsArrayBuffer(file);
   };
 
+  // Adds PDFs to the queue (deduped by file identity) and activates the
+  // first one if nothing is open yet.
+  const handleFilesSelect = (files: File[]) => {
+    const pdfs = files.filter(
+      f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    );
+    if (pdfs.length === 0) return;
+    const items = pdfs.map(f => ({ file: f, key: getFileKey(f) }));
+    setQueue(q => {
+      const existing = new Set(q.map(i => i.key));
+      return [...q, ...items.filter(i => !existing.has(i.key))];
+    });
+    if (!pdfFile) loadFile(pdfs[0]);
+  };
+
+  const switchToFile = (key: string) => {
+    if (key === activeKey) return;
+    const item = queue.find(i => i.key === key);
+    if (!item) return;
+    saveActiveSession();
+    loadFile(item.file);
+  };
+
+  const removeFromQueue = (key: string) => {
+    const remaining = queue.filter(i => i.key !== key);
+    setQueue(remaining);
+    if (key !== activeKey) return;
+    saveActiveSession();
+    if (remaining.length > 0) {
+      loadFile(remaining[0].file);
+    } else {
+      loadTokenRef.current++; // cancel any in-flight load
+      setPdfFile(null);
+      setPdfBuffer(null);
+      setPages([]);
+      setExportNames({});
+      activeFileKeyRef.current = null;
+      setActiveKey(null);
+      resetHistory();
+    }
+  };
+
   const handleBackToWelcome = () => {
-    if (!pdfFile || !activeFileKeyRef.current) {
-      setPdfFile(null);
-      setPdfBuffer(null);
-      setPages([]);
-      setExportNames({});
-      activeFileKeyRef.current = null;
-      return;
+    if (pdfFile && activeFileKeyRef.current) {
+      const msg = queue.length > 1
+        ? 'Close all files? Tags and progress are saved for next time.'
+        : 'Close this file? Your tags and progress are saved for next time.';
+      if (!confirm(msg)) return;
+      saveActiveSession();
     }
-    if (confirm('Close this file? Your tags and progress are saved for next time.')) {
-      saveSession(activeFileKeyRef.current, pdfFile.name, pages, exportNames);
-      setPdfFile(null);
-      setPdfBuffer(null);
-      setPages([]);
-      setExportNames({});
-      activeFileKeyRef.current = null;
-    }
+    loadTokenRef.current++; // cancel any in-flight load
+    setPdfFile(null);
+    setPdfBuffer(null);
+    setPages([]);
+    setExportNames({});
+    activeFileKeyRef.current = null;
+    setActiveKey(null);
+    setQueue([]);
+    resetHistory();
   };
 
   const handleExport = async (targetTag?: string) => {
@@ -207,10 +354,45 @@ export default function App() {
           <span className="logo-text">PDFPager</span>
         </div>
 
-        {pdfFile && (
-          <div className="file-chip">
-            <FileText size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-            <span>{pdfFile.name}</span>
+        {queue.length > 0 && (
+          <div className="queue-bar">
+            {queue.map(item => (
+              <button
+                key={item.key}
+                className={`queue-chip${item.key === activeKey ? ' active' : ''}`}
+                onClick={() => switchToFile(item.key)}
+                title={item.file.name}
+              >
+                <FileText size={12} style={{ flexShrink: 0 }} />
+                <span className="queue-chip-name">{item.file.name}</span>
+                <span
+                  className="queue-chip-close"
+                  title="Remove from queue"
+                  onClick={(e) => { e.stopPropagation(); removeFromQueue(item.key); }}
+                >
+                  <X size={11} />
+                </span>
+              </button>
+            ))}
+            <button
+              className="queue-chip queue-chip-add"
+              onClick={() => addInputRef.current?.click()}
+              title="Add more PDFs to the queue"
+            >
+              <Plus size={12} />
+              <span>Add</span>
+            </button>
+            <input
+              ref={addInputRef}
+              type="file"
+              accept=".pdf"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                if (e.target.files) handleFilesSelect(Array.from(e.target.files));
+                e.target.value = '';
+              }}
+            />
           </div>
         )}
 
@@ -221,7 +403,7 @@ export default function App() {
       {/* Main content */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {!pdfFile || !pdfBuffer ? (
-          <WelcomeScreen onFileSelect={handleFileSelect} />
+          <WelcomeScreen onFilesSelect={handleFilesSelect} />
         ) : (
           <Workspace
             pdfFile={pdfFile}
@@ -230,7 +412,12 @@ export default function App() {
             presets={presets}
             exportNames={exportNames}
             outputDirectory={outputDirectory}
-            onSetPages={setPages}
+            onSetPages={handleSetPages}
+            onSetPagesSilent={handleSetPagesSilent}
+            canUndo={historyRef.current.length > 0}
+            canRedo={futureRef.current.length > 0}
+            onUndo={undo}
+            onRedo={redo}
             onSetPresets={handleSetPresets}
             onSetExportNames={handleSetExportNames}
             onSetOutputDirectory={handleSetOutputDirectory}

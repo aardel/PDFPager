@@ -31,7 +31,24 @@ const PageSlot: React.FC<PageSlotProps> = ({
     const el = outerRef.current;
     if (!el) return;
     const io = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) setShouldRender(true); },
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setShouldRender(true);
+        } else {
+          // Page scrolled far off-screen: release the canvas backing store
+          // (full-res canvases are ~10MB+ each — keeping all of them alive
+          // breaks 200+ page documents). fitSize is kept so the placeholder
+          // holds its exact dimensions and scroll position doesn't jump;
+          // re-entering the margin re-renders via the same observer.
+          setShouldRender(false);
+          const c = canvasRef.current;
+          if (c && c.width > 0) {
+            c.width = 0;
+            c.height = 0;
+          }
+          lastRenderedKey.current = '';
+        }
+      },
       { rootMargin: '800px 0px' }
     );
     io.observe(el);
@@ -104,6 +121,9 @@ const PageSlot: React.FC<PageSlotProps> = ({
           display: 'block',
           width: displayW,
           height: displayH,
+          // White paper placeholder while the canvas buffer is released
+          // (released canvases are transparent).
+          background: '#fff',
           borderRadius: 3,
           flexShrink: 0,
           boxShadow: isActive
