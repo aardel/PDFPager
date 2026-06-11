@@ -13,6 +13,35 @@ export interface ProcessedPage {
   isBlank: boolean;    // Auto-detected blank
   tag?: string;        // Target filename prefix tag (e.g., 'docs', 'pops')
   rotation: number;    // Rotation in degrees (0, 90, 180, 270)
+  isCover?: boolean;   // Phone-scanned cover appended to the buffer (not in the original file)
+}
+
+/**
+ * Appends a scanned image as a real PDF page at the END of the buffer and
+ * returns the new buffer plus the appended page's index. Appending (rather
+ * than inserting) keeps every existing ProcessedPage.pageIndex valid — the
+ * cover's position in the document is controlled by where its entry sits in
+ * the pages array, since export and preview follow array order.
+ * The page is sized to A4 width with the image's aspect ratio, so covers
+ * don't dwarf the scanner-produced pages they sit next to.
+ */
+export async function appendImagePage(
+  arrayBuffer: ArrayBuffer,
+  imageBytes: ArrayBuffer,
+  mime: string
+): Promise<{ buffer: ArrayBuffer; pageIndex: number }> {
+  const doc = await PDFDocument.load(arrayBuffer.slice(0));
+  const image = mime.includes('png')
+    ? await doc.embedPng(imageBytes)
+    : await doc.embedJpg(imageBytes);
+
+  const pageWidth = 595.28; // A4 portrait width in points
+  const pageHeight = pageWidth * (image.height / image.width);
+  const page = doc.addPage([pageWidth, pageHeight]);
+  page.drawImage(image, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+
+  const bytes = await doc.save();
+  return { buffer: bytes.buffer as ArrayBuffer, pageIndex: doc.getPageCount() - 1 };
 }
 
 /**

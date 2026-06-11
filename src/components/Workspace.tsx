@@ -46,6 +46,7 @@ import {
   LayoutList,
   Undo2,
   Redo2,
+  Smartphone,
 } from 'lucide-react';
 
 interface WorkspaceProps {
@@ -67,6 +68,7 @@ interface WorkspaceProps {
   onSetOutputDirectory: (dir: string) => void;
   onExport: (targetTag?: string) => void;
   onBack: () => void;
+  onScanCover: () => void;
   isExporting: boolean;
   exportProgress: string;
 }
@@ -93,6 +95,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onSetOutputDirectory,
   onExport,
   onBack,
+  onScanCover,
   isExporting,
   exportProgress,
 }) => {
@@ -820,6 +823,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               onClick={() => activePage && rotatePage(activePage.id, 90)}
             >
               <RotateCw size={15} />
+            </button>
+            <div style={{ width: 1, height: 18, background: 'var(--separator)' }} />
+            <button
+              className="btn-icon"
+              title="Scan cover with phone"
+              onClick={onScanCover}
+            >
+              <Smartphone size={15} />
             </button>
             <div className="tags-toolbar-wrap" ref={tagsPanelRef}>
               <button

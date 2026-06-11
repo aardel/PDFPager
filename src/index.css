@@ -166,6 +166,10 @@ input[type="text"]:focus {
   text-overflow: ellipsis;
 }
 
+/* ===== Spinner (scan modal) ===== */
+@keyframes pp-spin { to { transform: rotate(360deg); } }
+.spin { animation: pp-spin 0.9s linear infinite; }
+
 /* ===== File queue (multi-file) ===== */
 .queue-bar {
   display: flex;

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Workspace } from './components/Workspace';
-import { getPdfPageCount, processAndSplitPDF, ProcessedPage } from './utils/pdfProcessor';
+import { getPdfPageCount, processAndSplitPDF, appendImagePage, ProcessedPage } from './utils/pdfProcessor';
+import { ScanCoverModal } from './components/ScanCoverModal';
 import { filterBasicPresets, getExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
 import {
@@ -51,6 +52,9 @@ export default function App() {
   // Monotonic token so a slow FileReader can't clobber a newer switch.
   const loadTokenRef = useRef(0);
   const addInputRef = useRef<HTMLInputElement>(null);
+
+  // Mobile cover scanning
+  const [showScanModal, setShowScanModal] = useState(false);
 
   // Undo/redo history for page mutations (delete, rotate, tag, reorder).
   // Snapshots are just the pages array (small metadata objects, no canvases),
@@ -161,21 +165,51 @@ export default function App() {
     setExportNames(names);
   }, []);
 
-  // Auto-save page tags, order, and export names per file
+  // Auto-save page tags, order, and export names per file. Scanned covers
+  // are stripped: they reference pages appended to the in-memory buffer
+  // only, and saving them would also break the session's pageCount check
+  // against the original file (v1: covers are re-scanned after reopening).
   useEffect(() => {
     const fileKey = activeFileKeyRef.current;
     if (!fileKey || !pdfFile || pages.length === 0) return;
     const timer = setTimeout(() => {
-      saveSession(fileKey, pdfFile.name, pages, exportNames);
+      saveSession(fileKey, pdfFile.name, pages.filter(p => !p.isCover), exportNames);
     }, 400);
     return () => clearTimeout(timer);
   }, [pages, exportNames, pdfFile]);
 
   const saveActiveSession = () => {
     if (pdfFile && activeFileKeyRef.current && pages.length > 0) {
-      saveSession(activeFileKeyRef.current, pdfFile.name, pages, exportNames);
+      saveSession(activeFileKeyRef.current, pdfFile.name, pages.filter(p => !p.isCover), exportNames);
     }
   };
+
+  // Inserts a phone-scanned cover: the image becomes a real PDF page
+  // appended at the END of the buffer (existing pageIndex values stay
+  // valid), and its entry goes to the top of the chosen tag section —
+  // array order is export order, so the cover exports on top.
+  const handleInsertCover = useCallback(async (imageBytes: ArrayBuffer, mime: string, tag: string | null) => {
+    if (!pdfBuffer) throw new Error('No document is open.');
+    const { buffer, pageIndex } = await appendImagePage(pdfBuffer, imageBytes, mime);
+    const current = pagesRef.current;
+    const newPage: ProcessedPage = {
+      id: current.reduce((m, p) => Math.max(m, p.id), 0) + 1,
+      pageIndex,
+      isDeleted: false,
+      isBlank: false,
+      rotation: 0,
+      tag: tag ?? undefined,
+      isCover: true,
+    };
+    let insertAt = 0;
+    if (tag) {
+      const idx = current.findIndex(p => p.tag === tag && !p.isDeleted);
+      insertAt = idx >= 0 ? idx : 0;
+    }
+    const next = [...current.slice(0, insertAt), newPage, ...current.slice(insertAt)];
+    setPdfBuffer(buffer);
+    handleSetPages(next); // records undo history
+  }, [pdfBuffer, handleSetPages]);
 
   // Reads a file's bytes and makes it the active document. Per-file tags and
   // progress are restored from the saved session (keyed by file metadata).
@@ -423,11 +457,20 @@ export default function App() {
             onSetOutputDirectory={handleSetOutputDirectory}
             onExport={handleExport}
             onBack={handleBackToWelcome}
+            onScanCover={() => setShowScanModal(true)}
             isExporting={isExporting}
             exportProgress={exportProgress}
           />
         )}
       </div>
+
+      {showScanModal && pdfFile && (
+        <ScanCoverModal
+          tags={[...new Set(pages.filter(p => p.tag && !p.isDeleted).map(p => p.tag as string))]}
+          onInsert={handleInsertCover}
+          onClose={() => setShowScanModal(false)}
+        />
+      )}
     </div>
   );
 }
