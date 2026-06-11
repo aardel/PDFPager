@@ -4,6 +4,12 @@ import { Workspace } from './components/Workspace';
 import { getPdfPageCount, processAndSplitPDF, ProcessedPage } from './utils/pdfProcessor';
 import { filterBasicPresets, getExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
+import {
+  supportsFileSystemAccess,
+  hasOutputDirectory,
+  pickOutputDirectory,
+  writeFilesToDirectory,
+} from './utils/fileSystem';
 import { FileText } from 'lucide-react';
 
 interface ElectronAPI {
@@ -127,14 +133,6 @@ export default function App() {
   const handleExport = async (targetTag?: string) => {
     if (!pdfBuffer || pages.length === 0) return;
 
-    let targetDir = outputDirectory;
-    if (!targetDir && window.electronAPI) {
-      const selected = await window.electronAPI.selectDirectory();
-      if (!selected) return;
-      targetDir = selected;
-      handleSetOutputDirectory(selected);
-    }
-
     try {
       setIsExporting(true);
       const exportLabel = targetTag ? getExportFileName(targetTag, exportNames) : '';
@@ -145,12 +143,21 @@ export default function App() {
       if (processedFiles.length === 0) {
         alert(targetTag ? `No active pages tagged as "${targetTag}".` : 'No tagged pages to export.');
         setIsExporting(false);
+        setExportProgress('');
         return;
       }
 
       setExportProgress(`Saving ${processedFiles.length} file(s)…`);
 
       if (window.electronAPI) {
+        // Desktop (Electron): native folder picker + write via IPC.
+        let targetDir = outputDirectory;
+        if (!targetDir) {
+          const selected = await window.electronAPI.selectDirectory();
+          if (!selected) { setIsExporting(false); setExportProgress(''); return; }
+          targetDir = selected;
+          handleSetOutputDirectory(selected);
+        }
         const result = await window.electronAPI.savePDFs(targetDir, processedFiles);
         if (result.success) {
           setExportProgress('Done!');
@@ -158,7 +165,18 @@ export default function App() {
         } else {
           throw new Error(result.error || 'Failed to write files');
         }
+      } else if (supportsFileSystemAccess()) {
+        // Browser (Chrome/Edge): write straight into a user-chosen folder.
+        if (!hasOutputDirectory()) {
+          const name = await pickOutputDirectory();
+          if (!name) { setIsExporting(false); setExportProgress(''); return; }
+          handleSetOutputDirectory(name);
+        }
+        await writeFilesToDirectory(processedFiles);
+        setExportProgress('Done!');
+        setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
       } else {
+        // Older browsers (Safari/Firefox): download each file individually.
         for (const file of processedFiles) {
           const blob = new Blob([file.data.buffer as ArrayBuffer], { type: 'application/pdf' });
           const url = URL.createObjectURL(blob);

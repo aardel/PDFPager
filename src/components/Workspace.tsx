@@ -20,6 +20,7 @@ import { ScrollablePreview } from './ScrollablePreview';
 import { BasicTagsEditor } from './BasicTagsEditor';
 import { PageContextMenu } from './PageContextMenu';
 import { ProcessedPage, loadPdfDocument } from '../utils/pdfProcessor';
+import { supportsFileSystemAccess, pickOutputDirectory } from '../utils/fileSystem';
 import {
   getExportFileName,
   isExportNameModified,
@@ -347,6 +348,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     if (window.electronAPI) {
       const path = await window.electronAPI.selectDirectory();
       if (path) onSetOutputDirectory(path);
+    } else if (supportsFileSystemAccess()) {
+      const name = await pickOutputDirectory();
+      if (name) onSetOutputDirectory(name);
     } else {
       onSetOutputDirectory('C:/Mock/PDFPager/Output');
     }
