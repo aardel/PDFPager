@@ -198,65 +198,58 @@ async function init() {
 init();
 
 /* ================== v2 detector: jscanify + OpenCV ====================
-   Loaded lazily (~9MB WASM, cached after first visit). While it loads —
-   or if it fails — everything falls back to the v1 Sobel pipeline. */
+   Runs entirely in a Web Worker — the ~9MB WASM compile froze the UI
+   thread for tens of seconds on budget phones. The page stays
+   responsive no matter what; while the worker warms up (or if it
+   fails), everything falls back to the v1 Sobel pipeline. */
 
-let scanner = null; // jscanify instance; non-null ⇒ OpenCV is ready
+let worker = null;
+let workerReady = false;
+let reqId = 0;
+const pendingReqs = new Map();
 
-function loadScript(src) {
-  return new Promise((res, rej) => {
-    const s = document.createElement('script');
-    s.src = src; s.async = true;
-    s.onload = res; s.onerror = () => rej(new Error('failed: ' + src));
-    document.head.appendChild(s);
+function loadDetector() {
+  try {
+    worker = new Worker('/scan-worker.js');
+    worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === 'ready') { workerReady = true; return; }
+      if (m.type === 'error') { console.warn('detector:', m.message); workerReady = false; return; }
+      const p = pendingReqs.get(m.id);
+      if (p) { pendingReqs.delete(m.id); clearTimeout(p.timer); p.resolve(m); }
+    };
+    worker.onerror = (e) => { console.warn('worker error:', e.message); workerReady = false; };
+  } catch (e) {
+    console.warn('worker unavailable:', e.message);
+    worker = null;
+  }
+}
+
+// Round-trip to the worker with a timeout so a wedged call can't hang the flow.
+function workerCall(msg, transfers, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!worker || !workerReady) return resolve(null);
+    const id = ++reqId;
+    const timer = setTimeout(() => { pendingReqs.delete(id); resolve(null); }, timeoutMs || 5000);
+    pendingReqs.set(id, { resolve, timer });
+    try {
+      worker.postMessage(Object.assign({ id }, msg), transfers || []);
+    } catch {
+      clearTimeout(timer);
+      pendingReqs.delete(id);
+      resolve(null);
+    }
   });
 }
 
-async function loadDetector() {
-  try {
-    await loadScript('/vendor/opencv.js');
-    // The opencv.js build exposes `cv` either directly or as a promise.
-    if (typeof cv === 'undefined') throw new Error('cv missing');
-    if (typeof cv.then === 'function') {
-      window.cv = await cv;
-    } else if (!cv.Mat) {
-      await new Promise((res) => { cv.onRuntimeInitialized = res; });
-    }
-    await loadScript('/vendor/jscanify.min.js');
-    scanner = new jscanify();
-  } catch (e) {
-    console.warn('OpenCV detector unavailable, using fallback:', e.message);
-    scanner = null;
-  }
-}
-
-// Runs jscanify contour detection on a canvas. Returns [TL,TR,BR,BL] in
-// that canvas's coordinates, or null if no sane quad was found.
-function cvDetect(canvas) {
-  if (!scanner) return null;
-  let img = null, contour = null;
-  try {
-    img = cv.imread(canvas);
-    contour = scanner.findPaperContour(img);
-    if (!contour) return null;
-    const p = scanner.getCornerPoints(contour);
-    if (!p || !p.topLeftCorner || !p.topRightCorner || !p.bottomRightCorner || !p.bottomLeftCorner) return null;
-    const quad = [p.topLeftCorner, p.topRightCorner, p.bottomRightCorner, p.bottomLeftCorner];
-    // Sanity: reject degenerate/tiny quads (shoelace area ≥ 8% of frame).
-    let area = 0;
-    for (let i = 0; i < 4; i++) {
-      const a = quad[i], b = quad[(i + 1) % 4];
-      area += a.x * b.y - b.x * a.y;
-    }
-    area = Math.abs(area) / 2;
-    if (area < canvas.width * canvas.height * 0.08) return null;
-    return quad.map(c => ({ x: c.x, y: c.y }));
-  } catch {
-    return null;
-  } finally {
-    if (img) img.delete();
-    if (contour) contour.delete();
-  }
+// Contour detection on a canvas via the worker. Returns [TL,TR,BR,BL] in
+// that canvas's coordinates, or null (not ready / nothing sane found).
+async function cvDetect(canvas) {
+  if (!workerReady) return null;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const res = await workerCall({ type: 'detect', image }, [image.data.buffer], 4000);
+  return res && res.corners ? res.corners : null;
 }
 
 /* ============================== camera ============================== */
@@ -340,18 +333,19 @@ let liveSlowStrikes = 0;
 const liveSmall = document.createElement('canvas');
 const liveSmallCtx = liveSmall.getContext('2d', { willReadFrequently: true });
 
-function liveTick() {
+async function liveTick() {
   if (!liveActive) return;
   let elapsed = 0;
   try {
-    if (scanner && video.videoWidth) {
+    if (workerReady && video.videoWidth) {
       const t0 = performance.now();
       const vw = video.videoWidth, vh = video.videoHeight;
       const k = Math.min(1, 320 / Math.max(vw, vh));
       liveSmall.width = Math.max(2, (vw * k) | 0);
       liveSmall.height = Math.max(2, (vh * k) | 0);
       liveSmallCtx.drawImage(video, 0, 0, liveSmall.width, liveSmall.height);
-      const quad = cvDetect(liveSmall);
+      const quad = await cvDetect(liveSmall);
+      if (!liveActive) return; // stage changed while we were detecting
 
       const overlay = document.getElementById('liveOverlay');
       const octx = overlay.getContext('2d');
@@ -384,10 +378,10 @@ function liveTick() {
         : 'Fill the frame with the cover';
 
       elapsed = performance.now() - t0;
-      if (elapsed > 250) {
+      // Detection runs off-thread now, so slowness no longer freezes the
+      // UI — only give up if round-trips are uselessly slow.
+      if (elapsed > 800) {
         if (++liveSlowStrikes >= 3) {
-          // Device can't keep up — kill the live preview, keep the camera
-          // responsive. Auto-detect still runs once on capture.
           liveActive = false;
           octx.clearRect(0, 0, overlay.width, overlay.height);
           document.getElementById('cameraHint').textContent = 'Fill the frame with the cover';
@@ -454,7 +448,7 @@ function onGalleryPick(e) {
    3×3 Gaussian blur → Sobel edges → bounding quad. Runs on a ≤800px
    downscale for speed; corners are scaled back to photo coordinates. */
 
-function detectCorners() {
+async function detectCorners() {
   const MAXD = 800;
   const k = Math.min(1, MAXD / Math.max(photo.width, photo.height));
   const w = Math.max(2, Math.round(photo.width * k));
@@ -465,7 +459,7 @@ function detectCorners() {
   sctx.drawImage(photo, 0, 0, w, h);
 
   // v2: real contour detection (true perspective quad) when OpenCV is up.
-  const cvQuad = cvDetect(small);
+  const cvQuad = await cvDetect(small);
   if (cvQuad) {
     const inv = 1 / k;
     return cvQuad.map(c => ({
@@ -547,14 +541,18 @@ function defaultCorners() {
   ];
 }
 
-function enterEdit() {
-  corners = detectCorners() || defaultCorners();
+async function enterEdit() {
+  // Show the editor immediately with provisional corners; refine them as
+  // soon as detection (possibly async via the worker) comes back.
+  corners = defaultCorners();
   show('edit');
   requestAnimationFrame(drawEdit);
+  const detected = await detectCorners();
+  if (detected) { corners = detected; drawEdit(); }
 }
 
-function autoDetect() {
-  corners = detectCorners() || defaultCorners();
+async function autoDetect() {
+  corners = (await detectCorners()) || defaultCorners();
   drawEdit();
 }
 
@@ -657,7 +655,7 @@ function retake() {
 
 let flatBlob = null;
 
-function flatten() {
+async function flatten() {
   const dist = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
   let outW = Math.round(Math.max(dist(corners[0], corners[1]), dist(corners[3], corners[2])));
   let outH = Math.round(Math.max(dist(corners[0], corners[3]), dist(corners[1], corners[2])));
@@ -667,24 +665,27 @@ function flatten() {
   outW = Math.round(outW * k);
   outH = Math.round(outH * k);
 
-  // v2: true homography via OpenCV warpPerspective when available.
-  if (scanner) {
-    try {
-      const out = scanner.extractPaper(photo, outW, outH, {
-        topLeftCorner: corners[0],
-        topRightCorner: corners[1],
-        bottomRightCorner: corners[2],
-        bottomLeftCorner: corners[3],
-      });
+  // v2: true homography via OpenCV warpPerspective in the worker.
+  if (workerReady) {
+    const image = photoCtx.getImageData(0, 0, photo.width, photo.height);
+    const res = await workerCall(
+      { type: 'flatten', image, corners, outW, outH },
+      [image.data.buffer],
+      15000
+    );
+    if (res && res.image) {
+      const out = document.createElement('canvas');
+      out.width = res.image.width;
+      out.height = res.image.height;
+      out.getContext('2d').putImageData(res.image, 0, 0);
       out.toBlob((blob) => {
         flatBlob = blob;
         document.getElementById('previewImg').src = URL.createObjectURL(blob);
         show('preview');
       }, 'image/jpeg', 0.92);
       return;
-    } catch (e) {
-      console.warn('warpPerspective failed, using fallback:', e);
     }
+    // fall through to the v1 path (worker hiccup)
   }
 
   // v1 fallback: inverse-bilinear mapping.
