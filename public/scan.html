@@ -268,12 +268,29 @@ let stream = null;
 const photo = document.createElement('canvas');
 const photoCtx = photo.getContext('2d', { willReadFrequently: true });
 
+function reportCamError(msg) {
+  const b = document.getElementById('errBanner');
+  b.textContent = '⚠ ' + msg;
+  b.style.display = 'block';
+}
+
 async function startCamera() {
+  // Defensive: release any straggler stream first — Android only allows
+  // one camera consumer, and a leftover track blocks every new
+  // getUserMedia (in every browser) until it's stopped.
+  stopCamera();
+  statusEl.textContent = 'opening camera…';
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 3072 }, height: { ideal: 3072 } },
-      audio: false,
-    });
+    // Race a watchdog: a hung getUserMedia (camera held by another app or
+    // a zombie tab) otherwise fails silently forever.
+    stream = await Promise.race([
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1920 } },
+        audio: false,
+      }),
+      new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('Camera did not start within 10s'), { name: 'TimeoutError' })), 10000)),
+    ]);
+    statusEl.textContent = 'connected';
     video.srcObject = stream;
     // Show the stage BEFORE calling play(): on Android Chrome, play() on a
     // video inside a display:none container can hang forever. And don't
@@ -282,16 +299,35 @@ async function startCamera() {
     video.play().catch(() => { /* frames usually arrive regardless */ });
     startLiveDetect();
   } catch (e) {
-    // Permission denied or no camera — gallery/file capture still works.
-    alert('Camera unavailable (' + e.name + '). Use Gallery instead.');
+    statusEl.textContent = 'connected';
+    reportCamError(`Camera failed: ${e.name || 'Error'} — ${e.message || ''}. ` +
+      (e.name === 'NotReadableError' || e.name === 'TimeoutError'
+        ? 'Another app or tab is holding the camera. Close other camera apps/tabs (or reboot the phone), then retry — or use Gallery.'
+        : e.name === 'NotAllowedError'
+          ? 'Camera permission is blocked for this site — allow it in the browser site settings, or use Gallery.'
+          : 'Use Gallery instead.'));
   }
 }
 
 function stopCamera() {
   stopLiveDetect();
-  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-  video.srcObject = null;
+  if (stream) {
+    try { stream.getTracks().forEach(t => t.stop()); } catch {}
+    stream = null;
+  }
+  try { video.srcObject = null; } catch {}
 }
+
+// Backgrounding the browser (or switching apps) must release the camera —
+// otherwise the next attempt finds the hardware busy.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden'
+      && document.getElementById('stage-camera').classList.contains('active')) {
+    stopCamera();
+    show('start');
+  }
+});
+window.addEventListener('pagehide', stopCamera);
 
 /* Live page-detection overlay: trace the detected page in green over the
    camera preview. Pure UX sugar — capture always re-detects at full
