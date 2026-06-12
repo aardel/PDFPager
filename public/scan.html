@@ -275,9 +275,11 @@ async function startCamera() {
       audio: false,
     });
     video.srcObject = stream;
-    // iOS doesn't always honor the autoplay attribute — play explicitly.
-    try { await video.play(); } catch { /* gesture-blocked; frames may still arrive */ }
+    // Show the stage BEFORE calling play(): on Android Chrome, play() on a
+    // video inside a display:none container can hang forever. And don't
+    // await it — autoplay/muted makes it best-effort anyway.
     show('camera');
+    video.play().catch(() => { /* frames usually arrive regardless */ });
     startLiveDetect();
   } catch (e) {
     // Permission denied or no camera — gallery/file capture still works.
@@ -291,56 +293,91 @@ function stopCamera() {
   video.srcObject = null;
 }
 
-/* Live page-detection overlay: every 300ms run contour detection on a
-   small video frame and trace the found quad in green over the preview.
-   Pure UX sugar — capture itself always re-detects at full quality. */
-let liveTimer = null;
+/* Live page-detection overlay: trace the detected page in green over the
+   camera preview. Pure UX sugar — capture always re-detects at full
+   quality. Self-pacing: each pass schedules the next based on how long it
+   took (a fixed setInterval piled up on slower Androids and saturated the
+   main thread, which made all buttons unresponsive). Auto-disables if the
+   device is consistently too slow. */
+let liveActive = false;
+let liveSlowStrikes = 0;
 const liveSmall = document.createElement('canvas');
 const liveSmallCtx = liveSmall.getContext('2d', { willReadFrequently: true });
 
-function startLiveDetect() {
-  const overlay = document.getElementById('liveOverlay');
-  const octx = overlay.getContext('2d');
-  liveTimer = setInterval(() => {
-    if (!scanner || !video.videoWidth) return;
-    const vw = video.videoWidth, vh = video.videoHeight;
-    const k = Math.min(1, 420 / Math.max(vw, vh));
-    liveSmall.width = Math.max(2, (vw * k) | 0);
-    liveSmall.height = Math.max(2, (vh * k) | 0);
-    liveSmallCtx.drawImage(video, 0, 0, liveSmall.width, liveSmall.height);
-    const quad = cvDetect(liveSmall);
+function liveTick() {
+  if (!liveActive) return;
+  let elapsed = 0;
+  try {
+    if (scanner && video.videoWidth) {
+      const t0 = performance.now();
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const k = Math.min(1, 320 / Math.max(vw, vh));
+      liveSmall.width = Math.max(2, (vw * k) | 0);
+      liveSmall.height = Math.max(2, (vh * k) | 0);
+      liveSmallCtx.drawImage(video, 0, 0, liveSmall.width, liveSmall.height);
+      const quad = cvDetect(liveSmall);
 
-    const r = video.getBoundingClientRect();
-    overlay.width = Math.max(1, r.width | 0);   // also clears the canvas
-    overlay.height = Math.max(1, r.height | 0);
-    if (!quad) {
-      document.getElementById('cameraHint').textContent = 'Fill the frame with the cover';
-      return;
+      const overlay = document.getElementById('liveOverlay');
+      const octx = overlay.getContext('2d');
+      const r = video.getBoundingClientRect();
+      const w = Math.max(1, r.width | 0), h = Math.max(1, r.height | 0);
+      if (overlay.width !== w) overlay.width = w;
+      if (overlay.height !== h) overlay.height = h;
+      octx.clearRect(0, 0, overlay.width, overlay.height);
+
+      if (quad) {
+        // The video renders with object-fit: cover — map detection coords
+        // through the same scale + center-crop offset.
+        const kd = liveSmall.width / vw;
+        const cover = Math.max(r.width / vw, r.height / vh);
+        const offX = (r.width - vw * cover) / 2;
+        const offY = (r.height - vh * cover) / 2;
+        const q = quad.map(c => ({ x: (c.x / kd) * cover + offX, y: (c.y / kd) * cover + offY }));
+        octx.beginPath();
+        octx.moveTo(q[0].x, q[0].y);
+        for (let i = 1; i < 4; i++) octx.lineTo(q[i].x, q[i].y);
+        octx.closePath();
+        octx.fillStyle = 'rgba(52,199,89,0.14)';
+        octx.fill();
+        octx.strokeStyle = '#34C759';
+        octx.lineWidth = 3;
+        octx.stroke();
+      }
+      document.getElementById('cameraHint').textContent = quad
+        ? 'Page detected — hold steady and capture'
+        : 'Fill the frame with the cover';
+
+      elapsed = performance.now() - t0;
+      if (elapsed > 250) {
+        if (++liveSlowStrikes >= 3) {
+          // Device can't keep up — kill the live preview, keep the camera
+          // responsive. Auto-detect still runs once on capture.
+          liveActive = false;
+          octx.clearRect(0, 0, overlay.width, overlay.height);
+          document.getElementById('cameraHint').textContent = 'Fill the frame with the cover';
+          return;
+        }
+      } else {
+        liveSlowStrikes = 0;
+      }
     }
-    // The video renders with object-fit: cover — map detection coords
-    // through the same scale + center-crop offset.
-    const kd = liveSmall.width / vw;
-    const cover = Math.max(r.width / vw, r.height / vh);
-    const offX = (r.width - vw * cover) / 2;
-    const offY = (r.height - vh * cover) / 2;
-    const q = quad.map(c => ({ x: (c.x / kd) * cover + offX, y: (c.y / kd) * cover + offY }));
-    octx.beginPath();
-    octx.moveTo(q[0].x, q[0].y);
-    for (let i = 1; i < 4; i++) octx.lineTo(q[i].x, q[i].y);
-    octx.closePath();
-    octx.fillStyle = 'rgba(52,199,89,0.14)';
-    octx.fill();
-    octx.strokeStyle = '#34C759';
-    octx.lineWidth = 3;
-    octx.stroke();
-    document.getElementById('cameraHint').textContent = 'Page detected — hold steady and capture';
-  }, 300);
+  } catch { /* never let the preview loop take the page down */ }
+  // Breathe: wait at least 3× the work time before the next pass.
+  setTimeout(liveTick, Math.max(350, elapsed * 3));
+}
+
+function startLiveDetect() {
+  if (liveActive) return;
+  liveActive = true;
+  liveSlowStrikes = 0;
+  setTimeout(liveTick, 350);
 }
 
 function stopLiveDetect() {
-  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+  liveActive = false;
   const overlay = document.getElementById('liveOverlay');
-  overlay.width = overlay.width; // clear
+  const octx = overlay.getContext('2d');
+  octx.clearRect(0, 0, overlay.width, overlay.height);
 }
 
 function capturePhoto() {
