@@ -85,6 +85,21 @@
     <div class="center"><div class="spinner"></div><p>Checking scan session…</p></div>
   </div>
 
+  <div id="stage-code" class="stage">
+    <div class="center">
+      <div class="big">🔢</div>
+      <h2>Enter the pairing code</h2>
+      <p>Open the scan window in PDFPager on the desktop — it shows a 4-digit code.</p>
+      <input id="pinInput" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code"
+             style="font-size:34px; letter-spacing:14px; text-align:center; width:210px; padding:10px 0 10px 14px;
+                    border:2px solid var(--sep); border-radius:12px; font-family:ui-monospace,monospace;" />
+      <p id="pinError" style="color:var(--danger); display:none; font-size:13px;"></p>
+    </div>
+    <div class="bar">
+      <button id="pinBtn" class="primary" onclick="claimPin()">Connect</button>
+    </div>
+  </div>
+
   <div id="stage-error" class="stage">
     <div class="center">
       <div class="big">⚠️</div>
@@ -169,7 +184,7 @@ window.addEventListener('unhandledrejection', (e) => {
 
 /* ============================== session ============================== */
 
-const token = new URLSearchParams(location.search).get('token') || '';
+let token = new URLSearchParams(location.search).get('token') || '';
 const statusEl = document.getElementById('status');
 
 function show(name) {
@@ -184,7 +199,19 @@ function fail(msg) {
 }
 
 async function init() {
-  if (!token) return fail('Missing scan token. Open the link from the PDFPager desktop again.');
+  // No token in the URL ⇒ the phone arrived via the memorable /scan URL —
+  // pair by typing the 4-digit code shown in the desktop modal.
+  if (!token) {
+    statusEl.textContent = 'enter code';
+    show('code');
+    const input = document.getElementById('pinInput');
+    input.focus();
+    input.addEventListener('input', () => {
+      document.getElementById('pinError').style.display = 'none';
+      if (input.value.length === 4) claimPin();
+    });
+    return;
+  }
   try {
     const r = await fetch(`/api/scan/session/${token}/connected`, { method: 'POST' });
     if (!r.ok) return fail();
@@ -195,6 +222,41 @@ async function init() {
     fail('Could not reach the server. Check your connection and reload.');
   }
 }
+
+async function claimPin() {
+  const input = document.getElementById('pinInput');
+  const errEl = document.getElementById('pinError');
+  const btn = document.getElementById('pinBtn');
+  const pin = (input.value || '').replace(/\D/g, '');
+  if (pin.length !== 4) {
+    errEl.textContent = 'Enter the 4-digit code from the desktop.';
+    errEl.style.display = 'block';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Connecting…';
+  try {
+    const r = await fetch(`/api/scan/claim/${pin}`, { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.success) {
+      errEl.textContent = j.error || 'Invalid or expired code — check the desktop window.';
+      errEl.style.display = 'block';
+      input.select();
+      return;
+    }
+    token = j.token;
+    // Keep the token in the URL so a page refresh stays paired.
+    try { history.replaceState(null, '', `/scan.html?token=${token}`); } catch {}
+    init();
+  } catch {
+    errEl.textContent = 'Could not reach the server — check your connection.';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+  }
+}
+
 init();
 
 /* ================== v2 detector: jscanify + OpenCV ====================

@@ -29,8 +29,10 @@ app.set('trust proxy', true);
 // ---------------------------------------------------------------- sessions
 // token  → session  (desktop + phone both use the token)
 // short  → token    (short code only exists to make the typed URL small)
+// pin    → token    (4-digit pairing code typed at /scan on the phone)
 const sessions = new Map();
 const shortCodes = new Map();
+const pins = new Map();
 
 // Unambiguous alphabet (no 0/O, 1/I/L) — code is typed by hand on a phone.
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -45,12 +47,25 @@ function newShortCode() {
   throw new Error('could not allocate short code');
 }
 
+// 4-digit pairing PIN, unique among live sessions. The space is only 10k —
+// acceptable for short-lived sessions on an internal tool, backed by a hard
+// rate limit on /api/scan/claim.
+function newPin() {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const pin = String(crypto.randomInt(0, 10000)).padStart(4, '0');
+    if (!pins.has(pin)) return pin;
+  }
+  throw new Error('could not allocate pin');
+}
+
 function createSession() {
   const token = crypto.randomBytes(16).toString('hex');
   const code = newShortCode();
+  const pin = newPin();
   const session = {
     token,
     code,
+    pin,
     createdAt: Date.now(),
     expiresAt: Date.now() + SESSION_TTL_MS,
     connected: false,        // phone opened the scan page
@@ -60,6 +75,7 @@ function createSession() {
   };
   sessions.set(token, session);
   shortCodes.set(code, token);
+  pins.set(pin, token);
   return session;
 }
 
@@ -76,6 +92,7 @@ function getLiveSession(token) {
 function destroySession(s) {
   sessions.delete(s.token);
   shortCodes.delete(s.code);
+  pins.delete(s.pin);
 }
 
 // Periodic sweep so abandoned sessions don't pile up.
@@ -144,6 +161,8 @@ app.post('/api/scan/session', rateLimit(15, 60 * 1000), async (req, res) => {
       success: true,
       token: session.token,
       code: session.code,
+      pin: session.pin,
+      quickUrl: `${host}/scan`,
       shortUrl,
       scanUrl,
       qrDataUrl,
@@ -153,6 +172,16 @@ app.post('/api/scan/session', rateLimit(15, 60 * 1000), async (req, res) => {
     console.error('create session failed:', err);
     res.status(500).json({ success: false, error: 'Could not create scan session' });
   }
+});
+
+// Phone: claim a session by its 4-digit PIN (typed at /scan). Tightly
+// rate-limited — the PIN space is small by design.
+app.post('/api/scan/claim/:pin', rateLimit(10, 60 * 1000), (req, res) => {
+  const pin = (req.params.pin || '').trim();
+  const token = pins.get(pin);
+  const s = token && getLiveSession(token);
+  if (!s) return res.status(404).json({ success: false, error: 'Invalid or expired code' });
+  res.json({ success: true, token: s.token });
 });
 
 // Phone: short URL → scan page (static, served by nginx alongside the SPA).

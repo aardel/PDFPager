@@ -20,6 +20,8 @@ interface ScanCoverModalProps {
 interface ScanSession {
   token: string;
   code: string;
+  pin: string;
+  quickUrl: string;
   shortUrl: string;
   qrDataUrl: string;
 }
@@ -183,16 +185,27 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
 
           {phase === 'waiting' && session && (
             <>
-              <img src={session.qrDataUrl} alt="Scan QR" width={210} height={210}
+              <img src={session.qrDataUrl} alt="Scan QR" width={190} height={190}
                    style={{ borderRadius: 10, border: '1px solid var(--separator)' }} />
               <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                or type this on the phone:
+                or on the phone, open
+                <span style={{ ...S.code, fontSize: 13, padding: '2px 8px', margin: '0 5px' }}>
+                  {session.quickUrl || session.shortUrl.replace(/^https?:\/\//, '')}
+                </span>
+                and enter:
               </div>
-              <div style={S.code}>{session.shortUrl.replace(/^https?:\/\//, '')}</div>
+              <div style={{
+                fontFamily: 'ui-monospace, monospace', fontSize: 34, fontWeight: 700,
+                letterSpacing: 10, color: 'var(--accent)', background: 'var(--bg-hover)',
+                border: '1px solid var(--separator)', borderRadius: 10,
+                padding: '6px 10px 6px 20px',
+              }}>
+                {session.pin}
+              </div>
               <div style={S.status}>
                 {phoneConnected
                   ? <><Check size={14} style={{ color: 'var(--tag-1, #34C759)' }} /> Phone connected — waiting for the scan…</>
-                  : <><Loader2 size={14} className="spin" /> Waiting for the phone to open the link…</>}
+                  : <><Loader2 size={14} className="spin" /> Waiting for the phone…</>}
               </div>
             </>
           )}
