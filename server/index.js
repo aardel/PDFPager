@@ -201,6 +201,7 @@ app.get('/api/scan/session/:token', (req, res) => {
     success: true,
     connected: s.connected,
     hasImage: !!s.image,
+    isRaw: !!s.isRaw,
     uploadedAt: s.uploadedAt,
     expiresAt: s.expiresAt,
   });
@@ -233,6 +234,9 @@ app.post(
     }
     s.image = req.file.buffer;
     s.imageMime = req.file.mimetype;
+    // raw=1 ⇒ the phone skipped corner/flatten editing — the desktop offers
+    // its own corner adjustment before inserting.
+    s.isRaw = req.query.raw === '1';
     s.uploadedAt = Date.now();
     // Give the desktop time to collect even if the 15min window is nearly up.
     s.expiresAt = Math.max(s.expiresAt, Date.now() + 5 * 60 * 1000);

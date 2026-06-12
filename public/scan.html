@@ -138,10 +138,11 @@
       <canvas id="editCanvas"></canvas>
       <div class="hint">Drag the corners to match the cover edges</div>
     </div>
-    <div class="bar">
+    <div class="bar" style="flex-wrap: wrap;">
       <button class="secondary" onclick="retake()">Retake</button>
       <button class="secondary" onclick="autoDetect()">Auto-detect</button>
-      <button class="primary" onclick="flatten()">Straighten ▸</button>
+      <button class="secondary" onclick="sendOriginal()" title="Skip straightening — adjust corners on the desktop instead">Send original</button>
+      <button class="primary" style="flex-basis: 100%;" onclick="flatten()">Straighten ▸</button>
     </div>
   </div>
 
@@ -392,6 +393,10 @@ window.addEventListener('pagehide', stopCamera);
    device is consistently too slow. */
 let liveActive = false;
 let liveSlowStrikes = 0;
+// Sticky quad: a momentary detection miss keeps the previous quad for a
+// couple of ticks instead of blinking the highlight off (less flicker).
+let lastLiveQuad = null;
+let liveMisses = 0;
 const liveSmall = document.createElement('canvas');
 const liveSmallCtx = liveSmall.getContext('2d', { willReadFrequently: true });
 
@@ -406,8 +411,16 @@ async function liveTick() {
       liveSmall.width = Math.max(2, (vw * k) | 0);
       liveSmall.height = Math.max(2, (vh * k) | 0);
       liveSmallCtx.drawImage(video, 0, 0, liveSmall.width, liveSmall.height);
-      const quad = await cvDetect(liveSmall);
+      let quad = await cvDetect(liveSmall);
       if (!liveActive) return; // stage changed while we were detecting
+      if (quad) {
+        lastLiveQuad = quad;
+        liveMisses = 0;
+      } else if (lastLiveQuad && ++liveMisses <= 2) {
+        quad = lastLiveQuad; // brief miss — hold the previous quad
+      } else {
+        lastLiveQuad = null;
+      }
 
       const overlay = document.getElementById('liveOverlay');
       const octx = overlay.getContext('2d');
@@ -467,6 +480,8 @@ function startLiveDetect() {
 
 function stopLiveDetect() {
   liveActive = false;
+  lastLiveQuad = null;
+  liveMisses = 0;
   const overlay = document.getElementById('liveOverlay');
   const octx = overlay.getContext('2d');
   octx.clearRect(0, 0, overlay.width, overlay.height);
@@ -594,7 +609,9 @@ let dispScale = 1;       // editCanvas px per photo px
 let dragIdx = -1;
 
 function defaultCorners() {
-  const mx = photo.width * 0.06, my = photo.height * 0.06;
+  // Deep inset: handles must start well away from the display edges or
+  // dragging them fights the system's edge-swipe gestures.
+  const mx = photo.width * 0.12, my = photo.height * 0.12;
   return [
     { x: mx, y: my },
     { x: photo.width - mx, y: my },
@@ -620,7 +637,9 @@ async function autoDetect() {
 
 function sizeEditCanvas() {
   const vp = editCanvas.parentElement.getBoundingClientRect();
-  const k = Math.min((vp.width - 8) / photo.width, (vp.height - 8) / photo.height);
+  // Generous gutters: corner handles at the photo edge still sit ~28px
+  // inside the physical screen, clear of system edge gestures.
+  const k = Math.min((vp.width - 56) / photo.width, (vp.height - 36) / photo.height);
   dispScale = k;
   const dpr = window.devicePixelRatio || 1;
   editCanvas.width = Math.round(photo.width * k * dpr);
@@ -797,25 +816,42 @@ async function flatten() {
 
 /* =============================== upload =============================== */
 
+async function doUpload(blob, raw) {
+  const fd = new FormData();
+  fd.append('image', blob, 'cover.jpg');
+  const r = await fetch(`/api/scan/upload/${token}${raw ? '?raw=1' : ''}`, { method: 'POST', body: fd });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.success) throw new Error(j.error || `Upload failed (${r.status})`);
+  statusEl.textContent = 'sent ✓';
+  show('done');
+}
+
 async function uploadScan() {
   if (!flatBlob) return;
   const btn = document.getElementById('uploadBtn');
   btn.disabled = true;
   btn.textContent = 'Uploading…';
   try {
-    const fd = new FormData();
-    fd.append('image', flatBlob, 'cover.jpg');
-    const r = await fetch(`/api/scan/upload/${token}`, { method: 'POST', body: fd });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j.success) throw new Error(j.error || `Upload failed (${r.status})`);
-    statusEl.textContent = 'sent ✓';
-    show('done');
+    await doUpload(flatBlob, false);
   } catch (e) {
     alert(e.message || 'Upload failed. Check your connection and try again.');
   } finally {
     btn.disabled = false;
     btn.textContent = 'Upload to PDFPager';
   }
+}
+
+// Skip phone-side straightening entirely — send the capture as-is and let
+// the desktop's corner editor handle it (flagged raw=1).
+async function sendOriginal() {
+  photo.toBlob(async (blob) => {
+    if (!blob) return alert('Could not read the captured photo.');
+    try {
+      await doUpload(blob, true);
+    } catch (e) {
+      alert(e.message || 'Upload failed. Check your connection and try again.');
+    }
+  }, 'image/jpeg', 0.92);
 }
 
 function resetForNext() {
