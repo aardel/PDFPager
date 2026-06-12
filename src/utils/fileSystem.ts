@@ -52,14 +52,22 @@ export async function pickOutputDirectory(): Promise<string | null> {
   }
 }
 
-// Writes each file into the previously chosen folder.
+// Writes each file into the previously chosen folder. A fileName may
+// contain "/" path segments (e.g. "org scan/file.pdf") — intermediate
+// subfolders are created as needed.
 export async function writeFilesToDirectory(files: WritableFile[]): Promise<void> {
   if (!dirHandle) throw new Error('No output folder selected.');
   if (!(await ensurePermission(dirHandle))) {
     throw new Error('Permission to write to the selected folder was denied.');
   }
   for (const file of files) {
-    const fileHandle = await dirHandle.getFileHandle(file.fileName, { create: true });
+    const parts = file.fileName.split('/').filter(Boolean);
+    const name = parts.pop()!;
+    let dir = dirHandle;
+    for (const part of parts) {
+      dir = await dir.getDirectoryHandle(part, { create: true });
+    }
+    const fileHandle = await dir.getFileHandle(name, { create: true });
     const writable = await fileHandle.createWritable();
     await writable.write(file.data);
     await writable.close();

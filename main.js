@@ -72,6 +72,8 @@ ipcMain.handle('save-pdfs', async (event, { folderPath, files }) => {
       // file.data is an ArrayBuffer/Uint8Array sent via IPC
       const buffer = Buffer.from(file.data);
       const filePath = path.join(folderPath, file.fileName);
+      // fileName may carry subfolders (e.g. "org scan/<name>.pdf").
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, buffer);
       savedFiles.push(filePath);
     }

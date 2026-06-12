@@ -142,6 +142,35 @@ export function detectIfPageIsBlank(
  * Splices the original PDF and creates separate binary PDFs for each group.
  * Skips pages marked as deleted.
  */
+/**
+ * Builds the cleaned "master" copy of the document as ONE PDF: every
+ * non-deleted page (scanned covers included) in current array order, with
+ * user rotations applied. Exported into the "org scan" folder so the
+ * archive keeps a complete cleaned original alongside the split files.
+ */
+export async function buildCleanedDocument(
+  arrayBuffer: ArrayBuffer,
+  pages: ProcessedPage[]
+): Promise<Uint8Array | null> {
+  const activePages = pages.filter(p => !p.isDeleted);
+  if (activePages.length === 0) return null;
+
+  const srcDoc = await PDFDocument.load(arrayBuffer);
+  const newDoc = await PDFDocument.create();
+  const copiedPages = await newDoc.copyPages(srcDoc, activePages.map(p => p.pageIndex));
+
+  copiedPages.forEach((page, idx) => {
+    const pageInfo = activePages[idx];
+    if (pageInfo && pageInfo.rotation) {
+      const currentRotation = page.getRotation().angle;
+      page.setRotation(degrees((currentRotation + pageInfo.rotation) % 360));
+    }
+    newDoc.addPage(page);
+  });
+
+  return newDoc.save();
+}
+
 export async function processAndSplitPDF(
   arrayBuffer: ArrayBuffer,
   pages: ProcessedPage[],

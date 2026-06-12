@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Workspace } from './components/Workspace';
-import { getPdfPageCount, processAndSplitPDF, appendImagePage, ProcessedPage } from './utils/pdfProcessor';
+import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, ProcessedPage } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
 import { filterBasicPresets, getExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
@@ -328,6 +328,20 @@ export default function App() {
         return;
       }
 
+      // Full exports also archive the cleaned original: one complete PDF
+      // (covers included, deleted pages removed, rotations applied) in an
+      // "org scan" subfolder next to the split files.
+      if (!targetTag && pdfFile) {
+        const cleaned = await buildCleanedDocument(pdfBuffer, pages);
+        if (cleaned) {
+          const baseName = pdfFile.name.replace(/\.pdf$/i, '') || 'document';
+          processedFiles.push({
+            fileName: `org scan/${baseName}.pdf`,
+            data: cleaned,
+          });
+        }
+      }
+
       setExportProgress(`Saving ${processedFiles.length} file(s)…`);
 
       if (window.electronAPI) {
@@ -363,7 +377,8 @@ export default function App() {
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = file.fileName;
+          // Downloads can't create folders — flatten "org scan/x.pdf".
+          a.download = file.fileName.replace(/\//g, ' - ');
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
