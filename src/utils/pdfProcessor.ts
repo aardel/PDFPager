@@ -41,7 +41,10 @@ export async function appendImagePage(
   page.drawImage(image, { x: 0, y: 0, width: pageWidth, height: pageHeight });
 
   const bytes = await doc.save();
-  return { buffer: bytes.buffer as ArrayBuffer, pageIndex: doc.getPageCount() - 1 };
+  // Slice honoring byteOffset/byteLength — bytes.buffer alone could carry
+  // extra bytes if pdf-lib returns a view into a larger allocation.
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return { buffer, pageIndex: doc.getPageCount() - 1 };
 }
 
 /**

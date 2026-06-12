@@ -51,8 +51,9 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
     if (!pdfDoc) return;
     let active = true;
     let renderTask: any = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    async function loadThumbnail() {
+    async function loadThumbnail(attempt: number) {
       if (!canvasRef.current) return;
       try {
         setLoading(true);
@@ -69,20 +70,27 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
         renderTask = page.render({ canvasContext: ctx, viewport });
         await renderTask.promise;
 
+        // Blank detection only after a COMPLETED render — a cancelled or
+        // failed render leaves a cleared canvas that would always look blank.
         if (active && canvasRef.current) {
           const detectedBlank = detectIfPageIsBlank(canvasRef.current);
           if (detectedBlank && !isBlank) onMarkBlank(true);
         }
       } catch (err: any) {
         if (err?.name === 'RenderingCancelledException') return;
+        console.error(`Thumbnail render failed (page ${pageIndex + 1}, rotation ${rotation}, attempt ${attempt + 1}):`, err);
+        if (active && attempt < 1) {
+          retryTimer = setTimeout(() => { if (active) loadThumbnail(attempt + 1); }, 250);
+        }
       } finally {
         if (active) setLoading(false);
       }
     }
 
-    loadThumbnail();
+    loadThumbnail(0);
     return () => {
       active = false;
+      if (retryTimer) clearTimeout(retryTimer);
       try { renderTask?.cancel(); } catch {}
     };
   }, [pageIndex, pdfDoc, rotation]);

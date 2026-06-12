@@ -66,8 +66,9 @@ const PageSlot: React.FC<PageSlotProps> = ({
     if (!shouldRender || !pdfDoc || !canvasRef.current || containerWidth < 10) return;
     let active = true;
     let renderTask: any = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    async function doRender() {
+    async function doRender(attempt: number) {
       try {
         const p = await pdfDoc.getPage(page.pageIndex + 1);
         if (!active) return;
@@ -95,10 +96,20 @@ const PageSlot: React.FC<PageSlotProps> = ({
         }
       } catch (err: any) {
         if (err?.name === 'RenderingCancelledException') return;
+        // A failed render leaves a cleared (blank) canvas — the page looks
+        // like it vanished. Log loudly and retry once before giving up.
+        console.error(`Preview render failed (page ${page.pageIndex + 1}, rotation ${page.rotation}, attempt ${attempt + 1}):`, err);
+        if (active && attempt < 1) {
+          retryTimer = setTimeout(() => { if (active) doRender(attempt + 1); }, 250);
+        }
       }
     }
-    doRender();
-    return () => { active = false; try { renderTask?.cancel(); } catch {} };
+    doRender(0);
+    return () => {
+      active = false;
+      if (retryTimer) clearTimeout(retryTimer);
+      try { renderTask?.cancel(); } catch {}
+    };
   }, [shouldRender, pdfDoc, page.pageIndex, page.rotation, containerWidth, containerHeight]);
 
   const displayW = fitSize ? fitSize.w * zoom : Math.max(containerWidth - 48, 100);
