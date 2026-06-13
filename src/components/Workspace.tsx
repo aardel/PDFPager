@@ -71,6 +71,7 @@ interface WorkspaceProps {
   onScanCover: () => void;
   isExporting: boolean;
   exportProgress: string;
+  onCancelExport: () => void;
 }
 
 const ZOOM_STEPS = [1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
@@ -98,6 +99,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onScanCover,
   isExporting,
   exportProgress,
+  onCancelExport,
 }) => {
   // Primary preview index
   const [primaryIndex, setPrimaryIndex] = useState(0);
@@ -1024,6 +1026,19 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         <div className="export-toast">
           <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white' }} />
           {exportProgress}
+          {!/^(Done|Cancelling)/.test(exportProgress) && (
+            <button
+              onClick={onCancelExport}
+              style={{
+                marginLeft: 10, padding: '2px 10px', borderRadius: 6, fontSize: 12,
+                fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
+                background: 'rgba(255,255,255,0.15)', color: '#fff',
+                border: '1px solid rgba(255,255,255,0.35)',
+              }}
+            >
+              Cancel
+            </button>
+          )}
         </div>
       )}
 

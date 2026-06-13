@@ -14,6 +14,7 @@ export interface ProcessedPage {
   tag?: string;        // Target filename prefix tag (e.g., 'docs', 'pops')
   rotation: number;    // Rotation in degrees (0, 90, 180, 270)
   isCover?: boolean;   // Phone-scanned cover appended to the buffer (not in the original file)
+  coverId?: string;    // Key of the cover's image bytes in IndexedDB (persists across reloads)
 }
 
 /**
@@ -174,11 +175,18 @@ export async function buildCleanedDocument(
   return newDoc.save();
 }
 
+/** Thrown when the user cancels a running export; callers reset silently. */
+export class ExportCancelled extends Error {
+  constructor() { super('Export cancelled'); this.name = 'ExportCancelled'; }
+}
+
 export async function processAndSplitPDF(
   arrayBuffer: ArrayBuffer,
   pages: ProcessedPage[],
   exportNames: Record<string, string> = {},
-  targetTag?: string
+  targetTag?: string,
+  onProgress?: (done: number, total: number, fileName: string) => void,
+  shouldCancel?: () => boolean
 ): Promise<{ fileName: string; data: Uint8Array }[]> {
   const srcDoc = await PDFDocument.load(arrayBuffer);
   const results: { fileName: string; data: Uint8Array }[] = [];
@@ -201,8 +209,12 @@ export async function processAndSplitPDF(
   }
 
   for (const tag of uniqueTags) {
+    if (shouldCancel?.()) throw new ExportCancelled();
     const pagesForTag = taggedPages.filter(p => p.tag!.trim().toLowerCase() === tag.toLowerCase());
     const activePageIndices = pagesForTag.map(p => p.pageIndex);
+    onProgress?.(results.length, uniqueTags.length, `${getExportFileName(tag, exportNames)}.pdf`);
+    // Let the progress toast paint before the synchronous pdf-lib work.
+    await new Promise(r => setTimeout(r, 0));
 
     // Create a new PDF document
     const newDoc = await PDFDocument.create();

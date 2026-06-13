@@ -490,7 +490,10 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
     },
     modal: {
       background: 'var(--bg-card)', borderRadius: 14,
-      width: phase === 'adjust' ? 'min(680px, 94vw)' : 'min(440px, 92vw)',
+      // Adjust and review both show the scan large — corner placement and
+      // filter comparison need the detail; the QR/waiting phases stay compact.
+      width: (phase === 'adjust' || phase === 'imageReady' || phase === 'inserting')
+        ? 'min(680px, 94vw)' : 'min(440px, 92vw)',
       maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
       display: 'flex', flexDirection: 'column',
     },
@@ -596,7 +599,7 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
           {(phase === 'imageReady' || phase === 'inserting') && previewUrl && (
             <>
               <img src={previewUrl} alt="Scanned cover"
-                   style={{ maxWidth: '100%', maxHeight: 220, borderRadius: 8,
+                   style={{ maxWidth: '100%', maxHeight: 'min(440px, 52vh)', borderRadius: 8,
                             border: '1px solid var(--separator)', boxShadow: '0 2px 10px rgba(0,0,0,0.12)' }} />
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
                 {(Object.keys(SCAN_FILTER_LABELS) as ScanFilter[]).map(f => (

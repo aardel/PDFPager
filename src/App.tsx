@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Workspace } from './components/Workspace';
-import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, ProcessedPage } from './utils/pdfProcessor';
+import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, ProcessedPage, ExportCancelled } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
 import { filterBasicPresets, getExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
+import { saveCoverImage, loadCoverImage, pruneCoverImages } from './utils/coverStore';
 import {
   supportsFileSystemAccess,
   hasOutputDirectory,
@@ -43,6 +44,8 @@ export default function App() {
   const [outputDirectory, setOutputDirectory] = useState<string>('');
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
+  // Checked between files during export; Cancel in the progress toast sets it.
+  const exportCancelRef = useRef(false);
   const activeFileKeyRef = useRef<string | null>(null);
 
   // Multi-file queue. The active file's buffer/pages live in the states
@@ -166,21 +169,21 @@ export default function App() {
   }, []);
 
   // Auto-save page tags, order, and export names per file. Scanned covers
-  // are stripped: they reference pages appended to the in-memory buffer
-  // only, and saving them would also break the session's pageCount check
-  // against the original file (v1: covers are re-scanned after reopening).
+  // are saved too: their position/tag lives in the session (referencing the
+  // image bytes in IndexedDB by coverId), and loadFile re-appends them to
+  // the fresh buffer on reopen.
   useEffect(() => {
     const fileKey = activeFileKeyRef.current;
     if (!fileKey || !pdfFile || pages.length === 0) return;
     const timer = setTimeout(() => {
-      saveSession(fileKey, pdfFile.name, pages.filter(p => !p.isCover), exportNames);
+      saveSession(fileKey, pdfFile.name, pages, exportNames);
     }, 400);
     return () => clearTimeout(timer);
   }, [pages, exportNames, pdfFile]);
 
   const saveActiveSession = () => {
     if (pdfFile && activeFileKeyRef.current && pages.length > 0) {
-      saveSession(activeFileKeyRef.current, pdfFile.name, pages.filter(p => !p.isCover), exportNames);
+      saveSession(activeFileKeyRef.current, pdfFile.name, pages, exportNames);
     }
   };
 
@@ -191,6 +194,14 @@ export default function App() {
   const handleInsertCover = useCallback(async (imageBytes: ArrayBuffer, mime: string, tag: string | null) => {
     if (!pdfBuffer) throw new Error('No document is open.');
     const { buffer, pageIndex } = await appendImagePage(pdfBuffer, imageBytes, mime);
+    // Persist the image bytes so the cover survives closing/reopening the
+    // file. Best-effort: if IndexedDB is unavailable the insert still works,
+    // the cover just won't be restored next time.
+    const coverId = crypto.randomUUID();
+    const fileKey = activeFileKeyRef.current;
+    if (fileKey) {
+      try { await saveCoverImage(coverId, fileKey, imageBytes, mime); } catch { /* see above */ }
+    }
     const current = pagesRef.current;
     const newPage: ProcessedPage = {
       id: current.reduce((m, p) => Math.max(m, p.id), 0) + 1,
@@ -200,6 +211,7 @@ export default function App() {
       rotation: 0,
       tag: tag ?? undefined,
       isCover: true,
+      coverId,
     };
     let insertAt = 0;
     if (tag) {
@@ -224,7 +236,7 @@ export default function App() {
         const fileKey = getFileKey(file);
         const saved = loadSession(fileKey, pageCount);
 
-        const initialPages: ProcessedPage[] = saved?.pages ?? Array.from(
+        let initialPages: ProcessedPage[] = saved?.pages ?? Array.from(
           { length: pageCount },
           (_, idx) => ({
             id: idx + 1,
@@ -235,9 +247,34 @@ export default function App() {
           })
         );
 
+        // Restore scanned covers: re-append each one's image (bytes kept in
+        // IndexedDB) to the freshly loaded buffer. The saved pageIndex is
+        // stale — appending assigns the real one. Covers whose bytes are
+        // gone are dropped; stale bytes for this file are pruned.
+        let workingBuffer = buffer;
+        if (initialPages.some(p => p.isCover)) {
+          const restored: ProcessedPage[] = [];
+          const keep = new Set<string>();
+          for (const p of initialPages) {
+            if (!p.isCover) { restored.push(p); continue; }
+            if (!p.coverId) continue;
+            const img = await loadCoverImage(p.coverId).catch(() => null);
+            if (!img) continue;
+            const res = await appendImagePage(workingBuffer, img.bytes, img.mime);
+            workingBuffer = res.buffer;
+            restored.push({ ...p, pageIndex: res.pageIndex });
+            keep.add(p.coverId);
+          }
+          initialPages = restored;
+          pruneCoverImages(fileKey, keep).catch(() => {});
+          if (token !== loadTokenRef.current) return; // superseded during restore
+        } else {
+          pruneCoverImages(fileKey, new Set()).catch(() => {});
+        }
+
         activeFileKeyRef.current = fileKey;
         resetHistory();
-        setPdfBuffer(buffer);
+        setPdfBuffer(workingBuffer);
         setPages(initialPages);
         setExportNames(saved?.exportNames ?? {});
         setPdfFile(file);
@@ -311,15 +348,26 @@ export default function App() {
     resetHistory();
   };
 
+  const cancelExport = () => {
+    exportCancelRef.current = true;
+    setExportProgress('Cancelling…');
+  };
+
   const handleExport = async (targetTag?: string) => {
     if (!pdfBuffer || pages.length === 0) return;
 
     try {
       setIsExporting(true);
+      exportCancelRef.current = false;
       const exportLabel = targetTag ? getExportFileName(targetTag, exportNames) : '';
       setExportProgress(targetTag ? `Saving ${exportLabel}.pdf…` : 'Processing…');
 
-      const processedFiles = await processAndSplitPDF(pdfBuffer, pages, exportNames, targetTag);
+      const shouldCancel = () => exportCancelRef.current;
+      const processedFiles = await processAndSplitPDF(
+        pdfBuffer, pages, exportNames, targetTag,
+        (done, total, name) => setExportProgress(`Building ${name} (${done + 1}/${total})…`),
+        shouldCancel
+      );
 
       if (processedFiles.length === 0) {
         alert(targetTag ? `No active pages tagged as "${targetTag}".` : 'No tagged pages to export.');
@@ -332,6 +380,8 @@ export default function App() {
       // (covers included, deleted pages removed, rotations applied) in an
       // "org scan" subfolder next to the split files.
       if (!targetTag && pdfFile) {
+        if (shouldCancel()) throw new ExportCancelled();
+        setExportProgress('Building the cleaned original (org scan)…');
         const cleaned = await buildCleanedDocument(pdfBuffer, pages);
         if (cleaned) {
           const baseName = pdfFile.name.replace(/\.pdf$/i, '') || 'document';
@@ -342,6 +392,7 @@ export default function App() {
         }
       }
 
+      if (shouldCancel()) throw new ExportCancelled();
       setExportProgress(`Saving ${processedFiles.length} file(s)…`);
 
       if (window.electronAPI) {
@@ -367,7 +418,10 @@ export default function App() {
           if (!name) { setIsExporting(false); setExportProgress(''); return; }
           handleSetOutputDirectory(name);
         }
-        await writeFilesToDirectory(processedFiles);
+        await writeFilesToDirectory(processedFiles, (done, total, name) => {
+          if (exportCancelRef.current) throw new ExportCancelled();
+          setExportProgress(`Writing ${name} (${done + 1}/${total})…`);
+        });
         setExportProgress('Done!');
         setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
       } else {
@@ -387,7 +441,9 @@ export default function App() {
         setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
       }
     } catch (error: any) {
-      alert(`Export failed: ${error.message}`);
+      if (!(error instanceof ExportCancelled)) {
+        alert(`Export failed: ${error.message}`);
+      }
       setIsExporting(false);
       setExportProgress('');
     }
@@ -475,6 +531,7 @@ export default function App() {
             onScanCover={() => setShowScanModal(true)}
             isExporting={isExporting}
             exportProgress={exportProgress}
+            onCancelExport={cancelExport}
           />
         )}
       </div>

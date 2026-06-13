@@ -26,7 +26,10 @@ export function loadSession(fileKey: string, pageCount: number): StoredSession |
     if (!raw) return null;
     const session: StoredSession = JSON.parse(raw);
     if (session.fileKey !== fileKey || session.pageCount !== pageCount) return null;
-    if (!Array.isArray(session.pages) || session.pages.length !== pageCount) return null;
+    if (!Array.isArray(session.pages)) return null;
+    // Covers are extra entries on top of the original pages — validate the
+    // count against the non-cover entries only.
+    if (session.pages.filter(p => !p.isCover).length !== pageCount) return null;
     return session;
   } catch {
     return null;
@@ -42,7 +45,8 @@ export function saveSession(
   const session: StoredSession = {
     fileKey,
     fileName,
-    pageCount: pages.length,
+    // pageCount = the ORIGINAL file's page count (covers are appended extras).
+    pageCount: pages.filter(p => !p.isCover).length,
     pages,
     exportNames,
     savedAt: Date.now(),
