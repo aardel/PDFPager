@@ -52,8 +52,6 @@ const SEED_TAGS = [
   'CASE REVIEW + ID CARDS',
 ];
 const SEED_VERSION = '2026-06-13-casefiles';
-// Placeholder defaults from before this list existed — dropped on seeding.
-const OLD_DEFAULT_TAGS = new Set(['docs', 'pops']);
 
 // Case-insensitive dedupe, preserving first occurrence and order.
 function dedupeTags(tags: string[]): string[] {
@@ -179,12 +177,10 @@ export default function App() {
     }
 
     if (localStorage.getItem('pdf_pager_presets_seed') !== SEED_VERSION) {
-      // One-time seed: make SEED_TAGS the base, keep any genuinely custom tags
-      // the user added (drop the old placeholder defaults), dedupe.
-      const kept = existing.filter(t => !OLD_DEFAULT_TAGS.has(t.toLowerCase()));
-      const merged = dedupeTags([...SEED_TAGS, ...kept]);
-      setPresets(merged);
-      localStorage.setItem('pdf_pager_presets', JSON.stringify(merged));
+      // One-time seed: replace whatever was saved with exactly SEED_TAGS.
+      const seeded = dedupeTags(SEED_TAGS);
+      setPresets(seeded);
+      localStorage.setItem('pdf_pager_presets', JSON.stringify(seeded));
       localStorage.setItem('pdf_pager_presets_seed', SEED_VERSION);
     } else {
       setPresets(existing);
