@@ -23,8 +23,48 @@ const PORT = process.env.PORT || 3600;
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
+// ---------------------------------------------------------------- auth
+// Gate for the main app (the SPA), NOT the scan page. Credentials and the
+// token-signing secret come from the environment so nothing sensitive lives
+// in the (public) repo. The secret defaults to a random per-boot value:
+// without PDFPAGER_AUTH_SECRET set, a container restart invalidates issued
+// tokens (everyone re-logs-in) — set it in the environment for durable logins.
+const AUTH_USER = process.env.PDFPAGER_USER || 'alexia';
+const AUTH_PASS = process.env.PDFPAGER_PASS || 'adele';
+const AUTH_SECRET = process.env.PDFPAGER_AUTH_SECRET || crypto.randomBytes(32).toString('hex');
+const AUTH_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+function timingSafeEqual(a, b) {
+  const ba = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  // Compare same-length buffers so length itself doesn't leak via early exit.
+  if (ba.length !== bb.length) {
+    crypto.timingSafeEqual(ba, ba);
+    return false;
+  }
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+// Stateless signed token: "<expiryMs>.<hmac>". Survives restarts iff the
+// secret is fixed via env; no server-side session store needed.
+function issueAuthToken() {
+  const exp = Date.now() + AUTH_TTL_MS;
+  const sig = crypto.createHmac('sha256', AUTH_SECRET).update(String(exp)).digest('hex');
+  return `${exp}.${sig}`;
+}
+
+function verifyAuthToken(token) {
+  if (typeof token !== 'string' || !token.includes('.')) return false;
+  const [expStr, sig] = token.split('.');
+  const exp = Number(expStr);
+  if (!Number.isFinite(exp) || Date.now() > exp) return false;
+  const expected = crypto.createHmac('sha256', AUTH_SECRET).update(expStr).digest('hex');
+  return timingSafeEqual(sig, expected);
+}
+
 const app = express();
 app.set('trust proxy', true);
+app.use(express.json({ limit: '4kb' }));
 
 // ---------------------------------------------------------------- sessions
 // token  → session  (desktop + phone both use the token)
@@ -141,6 +181,29 @@ const upload = multer({
 
 app.get('/api/scan/health', (req, res) => {
   res.json({ ok: true, sessions: sessions.size });
+});
+
+// ------------------------------------------------------------------- auth
+// Login for the main app. Rate-limited to blunt password guessing.
+app.post('/api/auth/login', rateLimit(10, 60 * 1000), (req, res) => {
+  const { username, password } = req.body || {};
+  const okUser = timingSafeEqual(username || '', AUTH_USER);
+  const okPass = timingSafeEqual(password || '', AUTH_PASS);
+  if (!okUser || !okPass) {
+    return res.status(401).json({ success: false, error: 'Incorrect username or password' });
+  }
+  res.json({ success: true, token: issueAuthToken() });
+});
+
+// Verify a stored token on app load (Authorization: Bearer <token>).
+app.get('/api/auth/verify', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const auth = req.get('authorization') || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!verifyAuthToken(token)) {
+    return res.status(401).json({ success: false });
+  }
+  res.json({ success: true });
 });
 
 // Desktop: create a pairing session. The short URL is built from the
