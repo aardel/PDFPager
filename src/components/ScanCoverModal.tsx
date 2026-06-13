@@ -234,6 +234,55 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
       ctx.lineWidth = 2;
       ctx.stroke();
     }
+
+    // Loupe while dragging (Adobe Scan-style): magnified circle above the
+    // grabbed corner with crosshair + quad edges for precise placement.
+    const di = dragIdxRef.current;
+    if (di >= 0) {
+      const c = cs[di];
+      const R = 48, Z = 2.2;
+      const canvasW = img.naturalWidth * k, canvasH = img.naturalHeight * k;
+      const cx = c.x * k, cy = c.y * k;
+      let lx = cx, ly = cy - R - 28;
+      if (ly < R + 4) ly = Math.min(cy + R + 28, canvasH - R - 4);
+      lx = Math.max(R + 4, Math.min(canvasW - R - 4, lx));
+
+      const srcW = (2 * R) / (k * Z);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(lx, ly, R, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(lx - R, ly - R, 2 * R, 2 * R);
+      ctx.drawImage(img, c.x - srcW / 2, c.y - srcW / 2, srcW, srcW, lx - R, ly - R, 2 * R, 2 * R);
+      ctx.strokeStyle = 'rgba(0,122,255,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const a = cs[i], b = cs[(i + 1) % 4];
+        ctx.moveTo(lx + (a.x - c.x) * k * Z, ly + (a.y - c.y) * k * Z);
+        ctx.lineTo(lx + (b.x - c.x) * k * Z, ly + (b.y - c.y) * k * Z);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.beginPath();
+      ctx.arc(lx, ly, R, 0, Math.PI * 2);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(lx, ly, R, 0, Math.PI * 2);
+      ctx.strokeStyle = '#007AFF';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(lx - 10, ly); ctx.lineTo(lx + 10, ly);
+      ctx.moveTo(lx, ly - 10); ctx.lineTo(lx, ly + 10);
+      ctx.strokeStyle = '#FF3B30';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
   }, []);
 
   useEffect(() => {
@@ -313,7 +362,7 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
     e.preventDefault();
   };
 
-  const onAdjustUp = () => { dragIdxRef.current = -1; bumpAdjust(n => n + 1); };
+  const onAdjustUp = () => { dragIdxRef.current = -1; drawAdjust(); /* clears the loupe */ bumpAdjust(n => n + 1); };
 
   const applyAdjust = async () => {
     const img = adjustImgRef.current;

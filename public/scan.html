@@ -688,6 +688,63 @@ function drawEdit() {
     editCtx.lineWidth = 2;
     editCtx.stroke();
   }
+
+  drawLoupe(editCtx, k);
+}
+
+// Magnifier while dragging a corner (Adobe Scan-style) — the finger hides
+// exactly the pixels that matter, so show them zoomed in a circle that
+// floats above the touch point (below it when too close to the top).
+function drawLoupe(ctx, k) {
+  if (dragIdx < 0) return;
+  const c = corners[dragIdx];
+  const R = 52;      // loupe radius in display px
+  const Z = 2.2;     // magnification relative to the edit view
+
+  const cx = c.x * k, cy = c.y * k;
+  const canvasW = photo.width * k, canvasH = photo.height * k;
+  let lx = cx, ly = cy - R - 34;
+  if (ly < R + 4) ly = Math.min(cy + R + 34, canvasH - R - 4);
+  lx = Math.max(R + 4, Math.min(canvasW - R - 4, lx));
+
+  // magnified patch of the photo around the corner
+  const srcW = (2 * R) / (k * Z);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(lx, ly, R, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(lx - R, ly - R, 2 * R, 2 * R);
+  ctx.drawImage(photo, c.x - srcW / 2, c.y - srcW / 2, srcW, srcW, lx - R, ly - R, 2 * R, 2 * R);
+  // quad edges through the loupe for alignment context
+  ctx.strokeStyle = 'rgba(0,122,255,0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i], b = corners[(i + 1) % 4];
+    ctx.moveTo(lx + (a.x - c.x) * k * Z, ly + (a.y - c.y) * k * Z);
+    ctx.lineTo(lx + (b.x - c.x) * k * Z, ly + (b.y - c.y) * k * Z);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // ring + crosshair
+  ctx.beginPath();
+  ctx.arc(lx, ly, R, 0, Math.PI * 2);
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(lx, ly, R, 0, Math.PI * 2);
+  ctx.strokeStyle = '#007AFF';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(lx - 11, ly); ctx.lineTo(lx + 11, ly);
+  ctx.moveTo(lx, ly - 11); ctx.lineTo(lx, ly + 11);
+  ctx.strokeStyle = '#FF3B30';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
 }
 
 function canvasPoint(ev) {
@@ -719,7 +776,7 @@ editCanvas.addEventListener('pointermove', (ev) => {
   drawEdit();
   ev.preventDefault();
 });
-const endDrag = () => { dragIdx = -1; };
+const endDrag = () => { dragIdx = -1; drawEdit(); /* clears the loupe */ };
 editCanvas.addEventListener('pointerup', endDrag);
 editCanvas.addEventListener('pointercancel', endDrag);
 window.addEventListener('resize', () => {
