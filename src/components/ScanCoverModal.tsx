@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Smartphone, X, Check, Loader2, Move } from 'lucide-react';
+import { ScanFilter, SCAN_FILTER_LABELS, applyScanFilter } from '../utils/imageFilters';
 
 /**
  * Pairs this desktop session with a phone for cover scanning.
@@ -95,8 +96,12 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
   const [target, setTarget] = useState<string | null>(null); // null = untagged
   const [insertedCount, setInsertedCount] = useState(0);
   const [adjustBusy, setAdjustBusy] = useState(false);
+  const [filter, setFilter] = useState<ScanFilter>('original');
+  const [filterBusy, setFilterBusy] = useState(false);
 
   const imageRef = useRef<{ bytes: ArrayBuffer; mime: string } | null>(null);
+  // Unfiltered image — filters always re-apply from here so they never compound.
+  const baseImageRef = useRef<{ bytes: ArrayBuffer; mime: string } | null>(null);
   const consumedRef = useRef<number | null>(null);
   const phaseRef = useRef<Phase>('creating');
   phaseRef.current = phase;
@@ -158,6 +163,8 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
           const bytes = await ir.arrayBuffer();
           consumedRef.current = j.uploadedAt;
           imageRef.current = { bytes, mime };
+          baseImageRef.current = { bytes, mime };
+          setFilter('original');
           setPreviewUrl(prev => {
             if (prev) URL.revokeObjectURL(prev);
             return URL.createObjectURL(new Blob([bytes], { type: mime }));
@@ -290,7 +297,9 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
   }, [phase, drawAdjust]);
 
   const openAdjust = useCallback(() => {
-    const current = imageRef.current;
+    // Corner editing always works on the unfiltered image — straightening a
+    // filtered render and then re-filtering would compound the effects.
+    const current = baseImageRef.current || imageRef.current;
     if (!current) return;
     ensureScanWorker();
     const blob = new Blob([current.bytes], { type: current.mime });
@@ -401,6 +410,8 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
       );
       const bytes = await blob.arrayBuffer();
       imageRef.current = { bytes, mime: 'image/jpeg' };
+      baseImageRef.current = { bytes, mime: 'image/jpeg' };
+      setFilter('original');
       setPreviewUrl(prev => {
         if (prev) URL.revokeObjectURL(prev);
         return URL.createObjectURL(blob);
@@ -413,6 +424,38 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
     }
   };
 
+  /* ----------------------------- filters ------------------------------- */
+
+  const handleFilter = async (f: ScanFilter) => {
+    const base = baseImageRef.current;
+    if (!base || filterBusy || f === filter) return;
+    setFilter(f);
+    if (f === 'original') {
+      imageRef.current = base;
+      setPreviewUrl(prev => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(new Blob([base.bytes], { type: base.mime }));
+      });
+      return;
+    }
+    setFilterBusy(true);
+    try {
+      const res = await applyScanFilter(base.bytes, base.mime, f);
+      if (baseImageRef.current !== base) return; // a newer image arrived meanwhile
+      imageRef.current = { bytes: res.bytes, mime: res.mime };
+      setPreviewUrl(prev => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(res.blob);
+      });
+    } catch (e: any) {
+      alert(e.message || 'Could not apply the filter.');
+      setFilter('original');
+      imageRef.current = base;
+    } finally {
+      setFilterBusy(false);
+    }
+  };
+
   /* ----------------------------- insert ------------------------------- */
 
   const handleInsert = async () => {
@@ -422,6 +465,8 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
       await onInsert(imageRef.current.bytes, imageRef.current.mime, target);
       setInsertedCount(n => n + 1);
       imageRef.current = null;
+      baseImageRef.current = null;
+      setFilter('original');
       setPhase('waiting'); // ready for the next scan
     } catch (e: any) {
       setErrorMsg(e.message || 'Failed to insert the cover.');
@@ -431,6 +476,8 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
 
   const handleDiscard = () => {
     imageRef.current = null;
+    baseImageRef.current = null;
+    setFilter('original');
     setPhase('waiting');
   };
 
@@ -551,7 +598,26 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
               <img src={previewUrl} alt="Scanned cover"
                    style={{ maxWidth: '100%', maxHeight: 220, borderRadius: 8,
                             border: '1px solid var(--separator)', boxShadow: '0 2px 10px rgba(0,0,0,0.12)' }} />
-              <button className="btn btn-sm btn-secondary" onClick={openAdjust} disabled={phase === 'inserting'}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+                {(Object.keys(SCAN_FILTER_LABELS) as ScanFilter[]).map(f => (
+                  <button
+                    key={f}
+                    onClick={() => handleFilter(f)}
+                    disabled={phase === 'inserting' || filterBusy}
+                    style={{
+                      fontSize: 12, fontWeight: 600, padding: '5px 12px', borderRadius: 99,
+                      cursor: 'pointer', fontFamily: 'inherit',
+                      border: `1px solid ${filter === f ? 'var(--accent)' : 'var(--separator)'}`,
+                      background: filter === f ? 'var(--accent)' : 'var(--bg-hover)',
+                      color: filter === f ? '#fff' : 'var(--text-primary, inherit)',
+                      opacity: filterBusy && filter !== f ? 0.5 : 1,
+                    }}
+                  >
+                    {filterBusy && filter === f ? <Loader2 size={11} className="spin" /> : null} {SCAN_FILTER_LABELS[f]}
+                  </button>
+                ))}
+              </div>
+              <button className="btn btn-sm btn-secondary" onClick={openAdjust} disabled={phase === 'inserting' || filterBusy}>
                 <Move size={13} /> Adjust corners
               </button>
               <div style={{ fontSize: 13, fontWeight: 600, alignSelf: 'flex-start' }}>Insert at the top of:</div>
