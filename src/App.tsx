@@ -37,6 +37,38 @@ interface QueueItem {
   key: string;
 }
 
+// Starting tag list. Seeded once (keyed by SEED_VERSION) so existing installs
+// pick it up too; users can add more from here and additions persist. Bump
+// SEED_VERSION to re-seed if this list changes.
+const SEED_TAGS = [
+  'MINUTES',
+  'APPLICATION',
+  'ETC JOB HISTORY',
+  'HSBC STATEMENT',
+  'WITHDRAWAL ADVICE',
+  'BANK BALANCE',
+  'HSBC CONSOLIDATED SHEET',
+  'MEDICAL BOARD REPORT',
+  'CASE REVIEW + ID CARDS',
+];
+const SEED_VERSION = '2026-06-13-casefiles';
+// Placeholder defaults from before this list existed — dropped on seeding.
+const OLD_DEFAULT_TAGS = new Set(['docs', 'pops']);
+
+// Case-insensitive dedupe, preserving first occurrence and order.
+function dedupeTags(tags: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of tags) {
+    const t = raw.trim();
+    const k = t.toLowerCase();
+    if (!t || seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
 export default function App() {
   const { logout } = useAuth();
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -140,24 +172,30 @@ export default function App() {
   }, [pdfFile, undo, redo]);
 
   useEffect(() => {
+    let existing: string[] = [];
     const saved = localStorage.getItem('pdf_pager_presets');
     if (saved) {
-      try {
-        setPresets(filterBasicPresets(JSON.parse(saved)));
-      } catch {
-        setPresets(['docs', 'pops']);
-      }
-    } else {
-      const defaults = ['docs', 'pops'];
-      setPresets(defaults);
-      localStorage.setItem('pdf_pager_presets', JSON.stringify(defaults));
+      try { existing = filterBasicPresets(JSON.parse(saved)); } catch { existing = []; }
     }
+
+    if (localStorage.getItem('pdf_pager_presets_seed') !== SEED_VERSION) {
+      // One-time seed: make SEED_TAGS the base, keep any genuinely custom tags
+      // the user added (drop the old placeholder defaults), dedupe.
+      const kept = existing.filter(t => !OLD_DEFAULT_TAGS.has(t.toLowerCase()));
+      const merged = dedupeTags([...SEED_TAGS, ...kept]);
+      setPresets(merged);
+      localStorage.setItem('pdf_pager_presets', JSON.stringify(merged));
+      localStorage.setItem('pdf_pager_presets_seed', SEED_VERSION);
+    } else {
+      setPresets(existing);
+    }
+
     const savedDir = localStorage.getItem('pdf_pager_output_dir');
     if (savedDir) setOutputDirectory(savedDir);
   }, []);
 
   const handleSetPresets = (p: string[]) => {
-    const basic = filterBasicPresets(p);
+    const basic = dedupeTags(filterBasicPresets(p));
     setPresets(basic);
     localStorage.setItem('pdf_pager_presets', JSON.stringify(basic));
   };
