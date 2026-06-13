@@ -13,6 +13,7 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
   );
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const userRef = useRef<HTMLInputElement>(null);
@@ -33,7 +34,7 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
     if (busy) return;
     setBusy(true);
     setError('');
-    const err = await login(username.trim(), password);
+    const err = await login(username.trim(), password, remember);
     setBusy(false);
     if (err) {
       setError(err);
@@ -102,6 +103,16 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
               onChange={e => setPassword(e.target.value)}
               style={inputStyle}
             />
+          </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1C1C1E', cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={e => setRemember(e.target.checked)}
+              style={{ width: 16, height: 16, accentColor: '#007AFF', cursor: 'pointer' }}
+            />
+            Remember me on this device
           </label>
 
           {error && <div style={{ color: '#FF3B30', fontSize: 13 }}>{error}</div>}
