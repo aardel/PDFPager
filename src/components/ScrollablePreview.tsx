@@ -115,6 +115,11 @@ const PageSlot: React.FC<PageSlotProps> = ({
   const displayW = fitSize ? fitSize.w * zoom : Math.max(containerWidth - 48, 100);
   const displayH = fitSize ? fitSize.h * zoom : defaultH * zoom;
 
+  // No fitSize yet ⇒ the page has never finished painting; the white box is
+  // just a placeholder. Show a spinner over it so the initial render window
+  // reads as "loading", not "broken".
+  const showSpinner = !fitSize;
+
   return (
     <div
       ref={setRef}
@@ -126,23 +131,33 @@ const PageSlot: React.FC<PageSlotProps> = ({
         boxSizing: 'border-box',
       }}
     >
-      <canvas
-        ref={canvasRef}
-        style={{
-          display: 'block',
-          width: displayW,
-          height: displayH,
-          // White paper placeholder while the canvas buffer is released
-          // (released canvases are transparent).
-          background: '#fff',
-          borderRadius: 3,
-          flexShrink: 0,
-          boxShadow: isActive
-            ? '0 0 0 2px var(--accent), 0 4px 24px rgba(0,0,0,0.18)'
-            : '0 2px 12px rgba(0,0,0,0.12)',
-          transition: 'box-shadow 0.15s',
-        }}
-      />
+      <div style={{ position: 'relative', flexShrink: 0 }}>
+        <canvas
+          ref={canvasRef}
+          style={{
+            display: 'block',
+            width: displayW,
+            height: displayH,
+            // White paper placeholder while the canvas buffer is released
+            // (released canvases are transparent).
+            background: '#fff',
+            borderRadius: 3,
+            boxShadow: isActive
+              ? '0 0 0 2px var(--accent), 0 4px 24px rgba(0,0,0,0.18)'
+              : '0 2px 12px rgba(0,0,0,0.12)',
+            transition: 'box-shadow 0.15s',
+          }}
+        />
+        {showSpinner && (
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            pointerEvents: 'none',
+          }}>
+            <div className="spinner" />
+          </div>
+        )}
+      </div>
     </div>
   );
 };
