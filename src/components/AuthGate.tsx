@@ -1,11 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { authRequired, verifyToken, login, clearToken } from '../utils/auth';
-import { LogOut } from 'lucide-react';
+
+// Lets the app's own UI (e.g. the header logout button) trigger a sign-out.
+const AuthContext = createContext<{ logout: () => void }>({ logout: () => {} });
+export const useAuth = () => useContext(AuthContext);
 
 /**
  * Wraps the app in a login gate (web only). While checking a stored token it
  * shows nothing; if unauthenticated it shows the login screen; once in, it
- * renders the app plus an unobtrusive sign-out control.
+ * renders the app and exposes logout via AuthContext.
  */
 export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState<'checking' | 'in' | 'out'>(
@@ -134,25 +137,9 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
   }
 
   return (
-    <>
+    <AuthContext.Provider value={{ logout }}>
       {children}
-      {authRequired() && (
-        <button
-          onClick={logout}
-          title="Sign out"
-          style={{
-            position: 'fixed', bottom: 14, left: 14, zIndex: 400,
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '6px 12px', borderRadius: 8, cursor: 'pointer',
-            background: 'var(--bg-card, #fff)', color: 'var(--text-secondary, #6E6E73)',
-            border: '1px solid var(--separator, #e5e5ea)', fontSize: 12, fontWeight: 600,
-            fontFamily: 'inherit', boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-          }}
-        >
-          <LogOut size={13} /> Sign out
-        </button>
-      )}
-    </>
+    </AuthContext.Provider>
   );
 };
 

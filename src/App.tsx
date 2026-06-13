@@ -12,7 +12,9 @@ import {
   pickOutputDirectory,
   writeFilesToDirectory,
 } from './utils/fileSystem';
-import { FileText, X, Plus } from 'lucide-react';
+import { FileText, X, Plus, LogOut } from 'lucide-react';
+import { useAuth } from './components/AuthGate';
+import { authRequired } from './utils/auth';
 
 interface ElectronAPI {
   selectDirectory: () => Promise<string | null>;
@@ -36,6 +38,7 @@ interface QueueItem {
 }
 
 export default function App() {
+  const { logout } = useAuth();
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
   const [pages, setPages] = useState<ProcessedPage[]>([]);
@@ -501,8 +504,20 @@ export default function App() {
           </div>
         )}
 
-        {/* Right side — empty, settings gear lives inside Workspace */}
-        <div style={{ width: 80 }} />
+        {/* Right side — logout; the settings gear is fixed top-right inside
+            Workspace, so leave clearance for it. */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', marginRight: pdfFile ? 44 : 8 }}>
+          {authRequired() && (
+            <button
+              className="btn btn-sm btn-secondary"
+              onClick={logout}
+              title="Sign out"
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <LogOut size={14} /> Sign out
+            </button>
+          )}
+        </div>
       </header>
 
       {/* Main content */}
