@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Workspace } from './components/Workspace';
-import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, ProcessedPage, ExportCancelled } from './utils/pdfProcessor';
+import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, bakeCrops, cropSignature, ProcessedPage, CropRect, ExportCancelled } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
+import { CropModal } from './components/CropModal';
 import { filterBasicPresets, getExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
 import { saveCoverImage, loadCoverImage, pruneCoverImages } from './utils/coverStore';
@@ -70,7 +71,15 @@ function dedupeTags(tags: string[]): string[] {
 export default function App() {
   const { logout } = useAuth();
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  // sourceBuffer = uncropped (original + scanned covers). pdfBuffer = the
+  // baked buffer with crops applied as CropBoxes; it's what the preview,
+  // thumbnails and exports consume. The crop editor reads sourceBuffer so a
+  // crop can always be re-edited (even expanded back out).
+  const [sourceBuffer, setSourceBuffer] = useState<ArrayBuffer | null>(null);
   const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
+  const sourceBufferRef = useRef<ArrayBuffer | null>(null);
+  useEffect(() => { sourceBufferRef.current = sourceBuffer; }, [sourceBuffer]);
+  const [cropTargetId, setCropTargetId] = useState<number | null>(null);
   const [pages, setPages] = useState<ProcessedPage[]>([]);
   const [presets, setPresets] = useState<string[]>([]);
   const [exportNames, setExportNames] = useState<Record<string, string>>({});
@@ -103,6 +112,25 @@ export default function App() {
   // without stale closures (and without side effects inside setState updaters).
   const pagesRef = useRef<ProcessedPage[]>([]);
   useEffect(() => { pagesRef.current = pages; }, [pages]);
+
+  // Re-bake crops into pdfBuffer whenever the source buffer or the crop set
+  // changes (covers undo/redo and crop edits alike). loadFile bakes inline
+  // and records the key here so this effect doesn't redundantly re-bake on
+  // first load.
+  const cropSig = useMemo(() => cropSignature(pages), [pages]);
+  const lastBakeRef = useRef<{ src: ArrayBuffer | null; sig: string }>({ src: null, sig: '' });
+  useEffect(() => {
+    if (!sourceBuffer) return;
+    if (lastBakeRef.current.src === sourceBuffer && lastBakeRef.current.sig === cropSig) return;
+    let alive = true;
+    (async () => {
+      const baked = await bakeCrops(sourceBuffer, pagesRef.current);
+      if (!alive) return;
+      lastBakeRef.current = { src: sourceBuffer, sig: cropSig };
+      setPdfBuffer(baked);
+    })();
+    return () => { alive = false; };
+  }, [sourceBuffer, cropSig]);
 
   const resetHistory = () => {
     historyRef.current = [];
@@ -229,8 +257,9 @@ export default function App() {
   // valid), and its entry goes to the top of the chosen tag section —
   // array order is export order, so the cover exports on top.
   const handleInsertCover = useCallback(async (imageBytes: ArrayBuffer, mime: string, tag: string | null) => {
-    if (!pdfBuffer) throw new Error('No document is open.');
-    const { buffer, pageIndex } = await appendImagePage(pdfBuffer, imageBytes, mime);
+    const src = sourceBufferRef.current;
+    if (!src) throw new Error('No document is open.');
+    const { buffer, pageIndex } = await appendImagePage(src, imageBytes, mime);
     // Persist the image bytes so the cover survives closing/reopening the
     // file. Best-effort: if IndexedDB is unavailable the insert still works,
     // the cover just won't be restored next time.
@@ -256,9 +285,19 @@ export default function App() {
       insertAt = idx >= 0 ? idx : 0;
     }
     const next = [...current.slice(0, insertAt), newPage, ...current.slice(insertAt)];
-    setPdfBuffer(buffer);
-    handleSetPages(next); // records undo history
-  }, [pdfBuffer, handleSetPages]);
+    setSourceBuffer(buffer); // rebake effect derives the new pdfBuffer
+    handleSetPages(next);    // records undo history
+  }, [handleSetPages]);
+
+  // Sets/clears a page's crop. The rebake effect picks up the metadata change
+  // and re-derives pdfBuffer; export inherits the crop via the baked CropBox.
+  const handleCropPage = useCallback((pageId: number, crop: CropRect | null) => {
+    const next = pagesRef.current.map(p =>
+      p.id === pageId ? { ...p, crop: crop ?? undefined } : p
+    );
+    handleSetPages(next);
+    setCropTargetId(null);
+  }, [handleSetPages]);
 
   // Reads a file's bytes and makes it the active document. Per-file tags and
   // progress are restored from the saved session (keyed by file metadata).
@@ -309,9 +348,17 @@ export default function App() {
           pruneCoverImages(fileKey, new Set()).catch(() => {});
         }
 
+        // Bake any saved crops inline so the workspace opens already-cropped
+        // (no blank-buffer flash), and record the key so the rebake effect
+        // doesn't immediately re-bake the same thing.
+        const baked = await bakeCrops(workingBuffer, initialPages);
+        if (token !== loadTokenRef.current) return;
+
         activeFileKeyRef.current = fileKey;
         resetHistory();
-        setPdfBuffer(workingBuffer);
+        lastBakeRef.current = { src: workingBuffer, sig: cropSignature(initialPages) };
+        setSourceBuffer(workingBuffer);
+        setPdfBuffer(baked);
         setPages(initialPages);
         setExportNames(saved?.exportNames ?? {});
         setPdfFile(file);
@@ -357,6 +404,7 @@ export default function App() {
     } else {
       loadTokenRef.current++; // cancel any in-flight load
       setPdfFile(null);
+      setSourceBuffer(null);
       setPdfBuffer(null);
       setPages([]);
       setExportNames({});
@@ -376,6 +424,7 @@ export default function App() {
     }
     loadTokenRef.current++; // cancel any in-flight load
     setPdfFile(null);
+    setSourceBuffer(null);
     setPdfBuffer(null);
     setPages([]);
     setExportNames({});
@@ -578,6 +627,7 @@ export default function App() {
             onExport={handleExport}
             onBack={handleBackToWelcome}
             onScanCover={() => setShowScanModal(true)}
+            onRequestCrop={(pageId) => setCropTargetId(pageId)}
             isExporting={isExporting}
             exportProgress={exportProgress}
             onCancelExport={cancelExport}
@@ -592,6 +642,21 @@ export default function App() {
           onClose={() => setShowScanModal(false)}
         />
       )}
+
+      {cropTargetId != null && sourceBuffer && (() => {
+        const page = pages.find(p => p.id === cropTargetId);
+        if (!page) return null;
+        return (
+          <CropModal
+            sourceBuffer={sourceBuffer}
+            pageIndex={page.pageIndex}
+            userRotation={page.rotation}
+            initialCrop={page.crop ?? null}
+            onApply={(crop) => handleCropPage(cropTargetId, crop)}
+            onClose={() => setCropTargetId(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

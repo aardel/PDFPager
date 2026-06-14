@@ -30,6 +30,7 @@ import {
   FolderOpen,
   RotateCw,
   RotateCcw,
+  Crop,
   Trash2,
   Settings,
   X,
@@ -72,6 +73,7 @@ interface WorkspaceProps {
   isExporting: boolean;
   exportProgress: string;
   onCancelExport: () => void;
+  onRequestCrop: (pageId: number) => void;
 }
 
 const ZOOM_STEPS = [1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
@@ -100,6 +102,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   isExporting,
   exportProgress,
   onCancelExport,
+  onRequestCrop,
 }) => {
   // Primary preview index
   const [primaryIndex, setPrimaryIndex] = useState(0);
@@ -825,6 +828,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               onClick={() => activePage && rotatePage(activePage.id, 90)}
             >
               <RotateCw size={15} />
+            </button>
+            <button
+              className="btn-icon"
+              title="Crop page"
+              onClick={() => activePage && onRequestCrop(activePage.id)}
+              disabled={!activePage || activePage.isDeleted}
+            >
+              <Crop size={15} />
             </button>
             <div style={{ width: 1, height: 18, background: 'var(--separator)' }} />
             <button

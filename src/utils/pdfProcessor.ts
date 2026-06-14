@@ -6,6 +6,10 @@ import { getExportFileName } from './tagUtils';
 // Set up PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+// Normalized crop rectangle: fractions in [0,1] of the page's UNROTATED
+// MediaBox, top-left origin (image-style). Undefined = no crop (full page).
+export interface CropRect { x: number; y: number; w: number; h: number }
+
 export interface ProcessedPage {
   id: number;          // Unique ID
   pageIndex: number;   // 0-indexed page in original PDF
@@ -15,6 +19,46 @@ export interface ProcessedPage {
   rotation: number;    // Rotation in degrees (0, 90, 180, 270)
   isCover?: boolean;   // Phone-scanned cover appended to the buffer (not in the original file)
   coverId?: string;    // Key of the cover's image bytes in IndexedDB (persists across reloads)
+  crop?: CropRect;     // Optional rectangular crop, applied as a PDF CropBox
+}
+
+/** Stable signature of the crop set, for deciding when a re-bake is needed. */
+export function cropSignature(pages: ProcessedPage[]): string {
+  return JSON.stringify(
+    pages
+      .filter(p => p.crop)
+      .map(p => ({ i: p.pageIndex, c: p.crop }))
+      .sort((a, b) => a.i - b.i)
+  );
+}
+
+/**
+ * Returns a copy of the buffer with each page's crop applied as a PDF
+ * CropBox. Crops are non-destructive metadata — pdf.js renders within the
+ * CropBox and pdf-lib copyPages preserves it, so preview, thumbnails and
+ * every export path honor crops with no further work. Returns the input
+ * unchanged when nothing is cropped (avoids a costly full re-save).
+ */
+export async function bakeCrops(arrayBuffer: ArrayBuffer, pages: ProcessedPage[]): Promise<ArrayBuffer> {
+  const cropped = pages.filter(p => p.crop);
+  if (cropped.length === 0) return arrayBuffer;
+
+  const doc = await PDFDocument.load(arrayBuffer.slice(0));
+  const total = doc.getPageCount();
+  for (const p of cropped) {
+    if (p.pageIndex < 0 || p.pageIndex >= total) continue;
+    const page = doc.getPage(p.pageIndex);
+    const mb = page.getMediaBox();
+    const c = p.crop!;
+    // top-left-origin fractions → PDF user space (bottom-left origin, y-up)
+    const x = mb.x + c.x * mb.width;
+    const width = c.w * mb.width;
+    const y = mb.y + mb.height * (1 - (c.y + c.h));
+    const height = c.h * mb.height;
+    page.setCropBox(x, y, width, height);
+  }
+  const bytes = await doc.save();
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 /**
