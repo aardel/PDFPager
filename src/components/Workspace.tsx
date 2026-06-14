@@ -6,6 +6,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
   DragEndEvent,
 } from '@dnd-kit/core';
 import {
@@ -82,6 +83,17 @@ const ZOOM_STEPS = [1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
 const SIDEBAR_MIN = 220;
 const SIDEBAR_MAX = 560;
 const SIDEBAR_DEFAULT = 300;
+
+// Drop target wrapping a tag group's pages, so a page can be dropped onto an
+// (otherwise empty) area of the group, not just onto another page.
+const GroupDropZone: React.FC<{ id: string; children: React.ReactNode }> = ({ id, children }) => {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return (
+    <div ref={setNodeRef} className={`sidebar-group-pages${isOver ? ' drop-over' : ''}`}>
+      {children}
+    </div>
+  );
+};
 
 export const Workspace: React.FC<WorkspaceProps> = ({
   pdfBuffer,
@@ -457,6 +469,55 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     }
   };
 
+  // Which group a page belongs to in the grouped view.
+  const pageGroupKey = (p: ProcessedPage): string =>
+    p.isDeleted ? '__deleted__' : (p.tag ?? '__untagged__');
+
+  // Reorder within the grouped view. Dropping a page onto another page (or
+  // onto a group's drop zone) moves it there; landing in a different tag's
+  // section re-tags it. The deleted group is never a source or a target.
+  const handleGroupDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over) return;
+    const activeId = Number(active.id);
+    const activePage = pages.find(p => p.id === activeId);
+    if (!activePage || activePage.isDeleted) return;
+
+    const overStr = String(over.id);
+    let destKey: string;
+    let overPageId: number | null = null;
+    if (overStr.startsWith('group:')) {
+      destKey = overStr.slice(6);
+    } else {
+      overPageId = Number(overStr);
+      if (overPageId === activeId) return;
+      const overPage = pages.find(p => p.id === overPageId);
+      if (!overPage) return;
+      destKey = pageGroupKey(overPage);
+    }
+    if (destKey === '__deleted__') return;
+
+    const destTag = destKey === '__untagged__' ? undefined : destKey;
+    const without = pages.filter(p => p.id !== activeId);
+    const moved: ProcessedPage = { ...activePage, tag: destTag };
+
+    let insertAt: number;
+    if (overPageId != null) {
+      insertAt = without.findIndex(p => p.id === overPageId);
+      if (insertAt < 0) insertAt = without.length;
+    } else {
+      // Group drop zone → after that group's last page in the array.
+      let last = -1;
+      without.forEach((p, i) => { if (pageGroupKey(p) === destKey) last = i; });
+      insertAt = last >= 0 ? last + 1 : without.length;
+    }
+
+    const next = [...without.slice(0, insertAt), moved, ...without.slice(insertAt)];
+    onSetPages(next);
+    const newPrimary = next.findIndex(p => p.id === activeId);
+    if (newPrimary >= 0) setPrimaryIndex(newPrimary);
+  };
+
   // Stats
   const activePage = pages[primaryIndex];
   const splitPage = splitIndex !== null ? pages[splitIndex] : null;
@@ -556,7 +617,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             ><List size={13} /></button>
             <button
               className={`btn-icon btn-sm${sidebarView === 'groups' ? ' active' : ''}`}
-              title="Grouped by tag" onClick={() => setSidebarView('groups')}
+              title="Grouped by tag — drag to reorder or move between tags" onClick={() => setSidebarView('groups')}
             ><LayoutList size={13} /></button>
           </div>
         </div>
@@ -600,6 +661,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
         {/* Groups view */}
         {sidebarView === 'groups' && (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleGroupDragEnd}
+          >
           <div className="sidebar-scroll">
             {sidebarGroups.map(group => {
               const collapsed = collapsedGroups.has(group.key);
@@ -656,32 +722,39 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                     <span className="sidebar-group-count">{group.entries.length}</span>
                   </div>
                   {!collapsed && (
-                    <div className="sidebar-group-pages">
-                      {group.entries.map(({ page, idx }) => (
-                        <PageThumbnail
-                          key={page.id}
-                          id={String(page.id)}
-                          pageIndex={page.pageIndex}
-                          pdfDoc={pdfDoc}
-                          isDeleted={page.isDeleted}
-                          isBlank={page.isBlank}
-                          rotation={page.rotation}
-                          tag={page.tag}
-                          isActive={primaryIndex === idx}
-                          isSplitActive={splitIndex === idx}
-                          isSelected={selectedIds.has(page.id)}
-                          onToggleDelete={() => toggleDelete(page.id)}
-                          onMarkBlank={(isBlank) => onSetPagesSilent(pages.map(p => p.id === page.id ? { ...p, isBlank } : p))}
-                          onClick={(e) => handleThumbClick(idx, e)}
-                          onContextMenu={(e) => handleThumbContextMenu(idx, e)}
-                        />
-                      ))}
-                    </div>
+                    <GroupDropZone id={`group:${group.key}`}>
+                      <SortableContext
+                        items={group.entries.map(({ page }) => String(page.id))}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {group.entries.map(({ page, idx }) => (
+                          <PageThumbnail
+                            key={page.id}
+                            id={String(page.id)}
+                            pageIndex={page.pageIndex}
+                            pdfDoc={pdfDoc}
+                            isDeleted={page.isDeleted}
+                            isBlank={page.isBlank}
+                            rotation={page.rotation}
+                            tag={page.tag}
+                            isActive={primaryIndex === idx}
+                            isSplitActive={splitIndex === idx}
+                            isSelected={selectedIds.has(page.id)}
+                            disableDrag={isDeleted}
+                            onToggleDelete={() => toggleDelete(page.id)}
+                            onMarkBlank={(isBlank) => onSetPagesSilent(pages.map(p => p.id === page.id ? { ...p, isBlank } : p))}
+                            onClick={(e) => handleThumbClick(idx, e)}
+                            onContextMenu={(e) => handleThumbContextMenu(idx, e)}
+                          />
+                        ))}
+                      </SortableContext>
+                    </GroupDropZone>
                   )}
                 </div>
               );
             })}
           </div>
+          </DndContext>
         )}
 
         {/* Footer */}

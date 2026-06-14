@@ -15,6 +15,7 @@ interface PageThumbnailProps {
   isActive: boolean;
   isSelected: boolean;
   isSplitActive?: boolean;
+  disableDrag?: boolean;
   onToggleDelete: () => void;
   onMarkBlank: (isBlank: boolean) => void;
   onClick: (e: React.MouseEvent) => void;
@@ -32,6 +33,7 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
   isActive,
   isSelected,
   isSplitActive,
+  disableDrag,
   onToggleDelete,
   onMarkBlank,
   onClick,
@@ -40,7 +42,7 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loading, setLoading] = useState(true);
 
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: disableDrag });
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),

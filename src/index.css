@@ -947,6 +947,13 @@ input[type="text"]:focus {
   display: flex;
   flex-direction: column;
   gap: 0;
+  border-radius: 8px;
+  transition: background 0.12s, box-shadow 0.12s;
+  min-height: 12px; /* keep a droppable target even when a group is empty */
+}
+.sidebar-group-pages.drop-over {
+  background: var(--accent-light);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 /* View toggle active state */
