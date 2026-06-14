@@ -38,12 +38,16 @@ export async function saveCoverImage(
   coverId: string,
   fileKey: string,
   bytes: ArrayBuffer,
-  mime: string
+  mime: string,
+  rawBytes?: ArrayBuffer,
+  rawMime?: string
 ): Promise<void> {
   const db = await openDb();
   try {
     const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put({ coverId, fileKey, bytes, mime, savedAt: Date.now() });
+    // rawBytes = the original camera capture (pre-flatten), kept so the
+    // cover's 4-corner perspective can be re-adjusted later. Optional.
+    tx.objectStore(STORE).put({ coverId, fileKey, bytes, mime, rawBytes, rawMime, savedAt: Date.now() });
     await txDone(tx);
   } finally {
     db.close();
@@ -62,6 +66,25 @@ export async function loadCoverImage(
       req.onerror = () => reject(req.error);
     });
     return rec && rec.bytes ? { bytes: rec.bytes, mime: rec.mime || 'image/jpeg' } : null;
+  } finally {
+    db.close();
+  }
+}
+
+/** The original camera capture for a cover, if one was stored (covers scanned
+ *  before raw-persistence shipped won't have it). */
+export async function loadCoverRaw(
+  coverId: string
+): Promise<{ bytes: ArrayBuffer; mime: string } | null> {
+  const db = await openDb();
+  try {
+    const tx = db.transaction(STORE, 'readonly');
+    const rec: any = await new Promise((resolve, reject) => {
+      const req = tx.objectStore(STORE).get(coverId);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return rec && rec.rawBytes ? { bytes: rec.rawBytes, mime: rec.rawMime || 'image/jpeg' } : null;
   } finally {
     db.close();
   }

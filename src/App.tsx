@@ -6,7 +6,7 @@ import { ScanCoverModal } from './components/ScanCoverModal';
 import { CropModal } from './components/CropModal';
 import { filterBasicPresets, getExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
-import { saveCoverImage, loadCoverImage, pruneCoverImages } from './utils/coverStore';
+import { saveCoverImage, loadCoverImage, loadCoverRaw, pruneCoverImages } from './utils/coverStore';
 import {
   supportsFileSystemAccess,
   hasOutputDirectory,
@@ -256,17 +256,20 @@ export default function App() {
   // appended at the END of the buffer (existing pageIndex values stay
   // valid), and its entry goes to the top of the chosen tag section —
   // array order is export order, so the cover exports on top.
-  const handleInsertCover = useCallback(async (imageBytes: ArrayBuffer, mime: string, tag: string | null) => {
+  const handleInsertCover = useCallback(async (
+    imageBytes: ArrayBuffer, mime: string, tag: string | null,
+    rawBytes?: ArrayBuffer, rawMime?: string,
+  ) => {
     const src = sourceBufferRef.current;
     if (!src) throw new Error('No document is open.');
     const { buffer, pageIndex } = await appendImagePage(src, imageBytes, mime);
-    // Persist the image bytes so the cover survives closing/reopening the
-    // file. Best-effort: if IndexedDB is unavailable the insert still works,
-    // the cover just won't be restored next time.
+    // Persist the flattened image (so the cover survives reload) plus the raw
+    // capture (so its corners can be re-adjusted later). Best-effort: if
+    // IndexedDB is unavailable the insert still works.
     const coverId = crypto.randomUUID();
     const fileKey = activeFileKeyRef.current;
     if (fileKey) {
-      try { await saveCoverImage(coverId, fileKey, imageBytes, mime); } catch { /* see above */ }
+      try { await saveCoverImage(coverId, fileKey, imageBytes, mime, rawBytes, rawMime); } catch { /* see above */ }
     }
     const current = pagesRef.current;
     const newPage: ProcessedPage = {
@@ -297,6 +300,42 @@ export default function App() {
     );
     handleSetPages(next);
     setCropTargetId(null);
+  }, [handleSetPages]);
+
+  // Re-adjust the perspective of an already-inserted cover using its stored
+  // raw capture. Opens the corner editor (ScanCoverModal in seed mode).
+  const [readjust, setReadjust] = useState<
+    { pageId: number; coverId: string; rawBytes: ArrayBuffer; rawMime: string } | null
+  >(null);
+
+  const handleReadjustCover = useCallback(async (pageId: number) => {
+    const page = pagesRef.current.find(p => p.id === pageId);
+    if (!page?.coverId) return;
+    const raw = await loadCoverRaw(page.coverId).catch(() => null);
+    if (!raw) {
+      alert("This cover was scanned before re-adjust was added, so its original photo isn't stored. Re-scan the cover to enable corner editing.");
+      return;
+    }
+    setReadjust({ pageId, coverId: page.coverId, rawBytes: raw.bytes, rawMime: raw.mime });
+  }, []);
+
+  // Replaces a cover's flattened image with a freshly re-adjusted one: append
+  // the new image (the old page is left orphaned and disappears on reload),
+  // repoint the cover's ProcessedPage, and update its stored bytes (raw kept).
+  const replaceCover = useCallback(async (
+    pageId: number, coverId: string, bytes: ArrayBuffer, mime: string,
+    rawBytes: ArrayBuffer, rawMime: string,
+  ) => {
+    const src = sourceBufferRef.current;
+    if (!src) return;
+    const { buffer, pageIndex } = await appendImagePage(src, bytes, mime);
+    const fileKey = activeFileKeyRef.current;
+    if (fileKey) {
+      try { await saveCoverImage(coverId, fileKey, bytes, mime, rawBytes, rawMime); } catch { /* best-effort */ }
+    }
+    setSourceBuffer(buffer);
+    const next = pagesRef.current.map(p => p.id === pageId ? { ...p, pageIndex } : p);
+    handleSetPages(next);
   }, [handleSetPages]);
 
   // Reads a file's bytes and makes it the active document. Per-file tags and
@@ -628,6 +667,7 @@ export default function App() {
             onBack={handleBackToWelcome}
             onScanCover={() => setShowScanModal(true)}
             onRequestCrop={(pageId) => setCropTargetId(pageId)}
+            onReadjustCover={handleReadjustCover}
             isExporting={isExporting}
             exportProgress={exportProgress}
             onCancelExport={cancelExport}
@@ -640,6 +680,20 @@ export default function App() {
           tags={[...new Set(pages.filter(p => p.tag && !p.isDeleted).map(p => p.tag as string))]}
           onInsert={handleInsertCover}
           onClose={() => setShowScanModal(false)}
+        />
+      )}
+
+      {readjust && (
+        <ScanCoverModal
+          tags={[]}
+          onInsert={handleInsertCover}
+          seed={{
+            rawBytes: readjust.rawBytes,
+            rawMime: readjust.rawMime,
+            onReplace: (bytes, mime) =>
+              replaceCover(readjust.pageId, readjust.coverId, bytes, mime, readjust.rawBytes, readjust.rawMime),
+          }}
+          onClose={() => setReadjust(null)}
         />
       )}
 

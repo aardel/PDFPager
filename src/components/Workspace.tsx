@@ -31,6 +31,7 @@ import {
   RotateCw,
   RotateCcw,
   Crop,
+  Scan,
   Trash2,
   Settings,
   X,
@@ -74,6 +75,7 @@ interface WorkspaceProps {
   exportProgress: string;
   onCancelExport: () => void;
   onRequestCrop: (pageId: number) => void;
+  onReadjustCover: (pageId: number) => void;
 }
 
 const ZOOM_STEPS = [1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
@@ -103,6 +105,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   exportProgress,
   onCancelExport,
   onRequestCrop,
+  onReadjustCover,
 }) => {
   // Primary preview index
   const [primaryIndex, setPrimaryIndex] = useState(0);
@@ -837,6 +840,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             >
               <Crop size={15} />
             </button>
+            {activePage?.isCover && (
+              <button
+                className="btn-icon"
+                title="Re-adjust cover corners"
+                onClick={() => onReadjustCover(activePage.id)}
+              >
+                <Scan size={15} />
+              </button>
+            )}
             <div style={{ width: 1, height: 18, background: 'var(--separator)' }} />
             <button
               className="btn-icon"

@@ -18,8 +18,21 @@ import { ScanFilter, SCAN_FILTER_LABELS, applyScanFilter } from '../utils/imageF
 interface ScanCoverModalProps {
   /** Ordered unique tags currently present in the document (section list). */
   tags: string[];
-  onInsert: (imageBytes: ArrayBuffer, mime: string, tag: string | null) => Promise<void>;
+  onInsert: (
+    imageBytes: ArrayBuffer, mime: string, tag: string | null,
+    rawBytes?: ArrayBuffer, rawMime?: string,
+  ) => Promise<void>;
   onClose: () => void;
+  /**
+   * Re-adjust mode: seed the corner editor from a stored raw capture instead
+   * of pairing a phone. The QR/PIN flow and tag picker are skipped; applying
+   * replaces the existing cover via onReplace rather than inserting a new one.
+   */
+  seed?: {
+    rawBytes: ArrayBuffer;
+    rawMime: string;
+    onReplace: (bytes: ArrayBuffer, mime: string) => Promise<void>;
+  };
 }
 
 interface ScanSession {
@@ -87,7 +100,7 @@ function scanWorkerCall(msg: Record<string, unknown>, transfers: Transferable[],
 
 /* ------------------------------ component ------------------------------ */
 
-export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, onClose }) => {
+export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, onClose, seed }) => {
   const [phase, setPhase] = useState<Phase>('creating');
   const [session, setSession] = useState<ScanSession | null>(null);
   const [phoneConnected, setPhoneConnected] = useState(false);
@@ -102,6 +115,9 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
   const imageRef = useRef<{ bytes: ArrayBuffer; mime: string } | null>(null);
   // Unfiltered image — filters always re-apply from here so they never compound.
   const baseImageRef = useRef<{ bytes: ArrayBuffer; mime: string } | null>(null);
+  // The original camera capture (never overwritten by flatten/filter), kept so
+  // the inserted cover can be perspective-re-adjusted later.
+  const rawCaptureRef = useRef<{ bytes: ArrayBuffer; mime: string } | null>(null);
   const consumedRef = useRef<number | null>(null);
   const phaseRef = useRef<Phase>('creating');
   phaseRef.current = phase;
@@ -116,6 +132,7 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
   /* ------------------------- session lifecycle ------------------------- */
 
   useEffect(() => {
+    if (seed) return; // re-adjust mode pairs no phone
     let cancelled = false;
     let token: string | null = null;
     (async () => {
@@ -164,6 +181,7 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
           consumedRef.current = j.uploadedAt;
           imageRef.current = { bytes, mime };
           baseImageRef.current = { bytes, mime };
+          rawCaptureRef.current = { bytes, mime }; // the unedited capture
           setFilter('original');
           setPreviewUrl(prev => {
             if (prev) URL.revokeObjectURL(prev);
@@ -336,6 +354,16 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
     img.src = url;
   }, [drawAdjust]);
 
+  // Re-adjust mode: seed straight into the corner editor from the stored raw.
+  useEffect(() => {
+    if (!seed) return;
+    rawCaptureRef.current = { bytes: seed.rawBytes, mime: seed.rawMime };
+    imageRef.current = { bytes: seed.rawBytes, mime: seed.rawMime };
+    baseImageRef.current = { bytes: seed.rawBytes, mime: seed.rawMime };
+    openAdjust();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const canvasPoint = (e: React.PointerEvent): Pt => {
     const canvas = adjustCanvasRef.current!;
     const k = (canvas as any)._scale || 1;
@@ -462,19 +490,28 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
     if (!imageRef.current) return;
     setPhase('inserting');
     try {
-      await onInsert(imageRef.current.bytes, imageRef.current.mime, target);
+      if (seed) {
+        // Re-adjust mode: replace the existing cover, then close.
+        await seed.onReplace(imageRef.current.bytes, imageRef.current.mime);
+        onClose();
+        return;
+      }
+      const raw = rawCaptureRef.current;
+      await onInsert(imageRef.current.bytes, imageRef.current.mime, target, raw?.bytes, raw?.mime);
       setInsertedCount(n => n + 1);
       imageRef.current = null;
       baseImageRef.current = null;
+      rawCaptureRef.current = null;
       setFilter('original');
       setPhase('waiting'); // ready for the next scan
     } catch (e: any) {
-      setErrorMsg(e.message || 'Failed to insert the cover.');
+      setErrorMsg(e.message || (seed ? 'Failed to replace the cover.' : 'Failed to insert the cover.'));
       setPhase('error');
     }
   };
 
   const handleDiscard = () => {
+    if (seed) { onClose(); return; } // nothing to go back to in re-adjust mode
     imageRef.current = null;
     baseImageRef.current = null;
     setFilter('original');
@@ -518,8 +555,9 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
     <div style={S.overlay} onClick={onClose}>
       <div style={S.modal} onClick={e => e.stopPropagation()}>
         <div style={S.header}>
-          <Smartphone size={16} style={{ color: 'var(--accent)' }} />
-          <b style={{ fontSize: 14, flex: 1 }}>Scan cover with phone</b>
+          {seed ? <Move size={16} style={{ color: 'var(--accent)' }} />
+                : <Smartphone size={16} style={{ color: 'var(--accent)' }} />}
+          <b style={{ fontSize: 14, flex: 1 }}>{seed ? 'Re-adjust cover' : 'Scan cover with phone'}</b>
           {insertedCount > 0 && (
             <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {insertedCount} inserted ✓
@@ -532,7 +570,7 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
 
         <div style={S.body}>
           {phase === 'creating' && (
-            <div style={S.status}><Loader2 size={14} className="spin" /> Creating scan session…</div>
+            <div style={S.status}><Loader2 size={14} className="spin" /> {seed ? 'Loading…' : 'Creating scan session…'}</div>
           )}
 
           {phase === 'error' && (
@@ -623,25 +661,31 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
               <button className="btn btn-sm btn-secondary" onClick={openAdjust} disabled={phase === 'inserting' || filterBusy}>
                 <Move size={13} /> Adjust corners
               </button>
-              <div style={{ fontSize: 13, fontWeight: 600, alignSelf: 'flex-start' }}>Insert at the top of:</div>
-              <label style={{ ...S.radioRow, borderColor: target === null ? 'var(--accent)' : 'var(--separator)' }}>
-                <input type="radio" name="scan-target" checked={target === null} onChange={() => setTarget(null)} />
-                Document (untagged)
-              </label>
-              {tags.map(t => (
-                <label key={t} style={{ ...S.radioRow, borderColor: target === t ? 'var(--accent)' : 'var(--separator)' }}>
-                  <input type="radio" name="scan-target" checked={target === t} onChange={() => setTarget(t)} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{t}</span>
-                </label>
-              ))}
+              {!seed && (
+                <>
+                  <div style={{ fontSize: 13, fontWeight: 600, alignSelf: 'flex-start' }}>Insert at the top of:</div>
+                  <label style={{ ...S.radioRow, borderColor: target === null ? 'var(--accent)' : 'var(--separator)' }}>
+                    <input type="radio" name="scan-target" checked={target === null} onChange={() => setTarget(null)} />
+                    Document (untagged)
+                  </label>
+                  {tags.map(t => (
+                    <label key={t} style={{ ...S.radioRow, borderColor: target === t ? 'var(--accent)' : 'var(--separator)' }}>
+                      <input type="radio" name="scan-target" checked={target === t} onChange={() => setTarget(t)} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{t}</span>
+                    </label>
+                  ))}
+                </>
+              )}
               <div style={{ display: 'flex', gap: 8, width: '100%', marginTop: 4 }}>
                 <button className="btn btn-sm btn-secondary" style={{ flex: 1 }}
                         onClick={handleDiscard} disabled={phase === 'inserting'}>
-                  Discard
+                  {seed ? 'Cancel' : 'Discard'}
                 </button>
                 <button className="btn btn-sm btn-primary" style={{ flex: 2 }}
                         onClick={handleInsert} disabled={phase === 'inserting'}>
-                  {phase === 'inserting' ? 'Inserting…' : 'Insert cover'}
+                  {phase === 'inserting'
+                    ? (seed ? 'Replacing…' : 'Inserting…')
+                    : (seed ? 'Replace cover' : 'Insert cover')}
                 </button>
               </div>
             </>
