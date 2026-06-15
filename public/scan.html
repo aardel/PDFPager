@@ -117,7 +117,9 @@
       <button class="secondary" onclick="pickFromGallery()">Gallery</button>
       <button class="primary" onclick="startCamera()">Open camera</button>
     </div>
-    <input id="galleryInput" type="file" accept="image/*" capture="environment" style="display:none" onchange="onGalleryPick(event)" />
+    <!-- No `capture` attribute: that would force the camera. Omitting it lets
+         the browser show the photo library / file picker. -->
+    <input id="galleryInput" type="file" accept="image/*" style="display:none" onchange="onGalleryPick(event)" />
   </div>
 
   <div id="stage-camera" class="stage">
