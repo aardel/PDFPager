@@ -15,7 +15,7 @@ function pumpQueue(): void {
 
 /** PDF.js scale for a thumb that will be shown at `fitScale` CSS pixels. */
 export function thumbRenderScale(fitScale: number): number {
-  return Math.min(Math.max(fitScale, 0.06), 1.2);
+  return Math.min(Math.max(fitScale, 0.06), 2.5);
 }
 
 /** Cap concurrent pdf.js page renders so large files stay responsive. */

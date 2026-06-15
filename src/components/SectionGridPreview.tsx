@@ -130,9 +130,9 @@ const GridCell: React.FC<GridCellProps> = ({
           if (!active) return;
           const rot = (p.rotate + page.rotation) % 360;
           const native = p.getViewport({ scale: 1, rotation: rot });
-          // Fixed target resolution (~independent of current cell size) so it
-          // stays reasonably crisp when zoomed in, without re-rendering.
-          const renderScale = thumbRenderScale(420 / native.width);
+          // Fixed, generous target resolution so thumbnails stay crisp even
+          // when zoomed to large cells — without re-rendering on every zoom.
+          const renderScale = thumbRenderScale(1000 / native.width);
           const vp = p.getViewport({ scale: renderScale, rotation: rot });
           const canvas = canvasRef.current;
           if (!canvas || !active) return;
