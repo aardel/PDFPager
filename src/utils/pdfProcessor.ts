@@ -43,7 +43,7 @@ export async function bakeCrops(arrayBuffer: ArrayBuffer, pages: ProcessedPage[]
   const cropped = pages.filter(p => p.crop);
   if (cropped.length === 0) return arrayBuffer;
 
-  const doc = await PDFDocument.load(arrayBuffer.slice(0));
+  const doc = await PDFDocument.load(arrayBuffer.slice(0), { ignoreEncryption: true });
   const total = doc.getPageCount();
   for (const p of cropped) {
     if (p.pageIndex < 0 || p.pageIndex >= total) continue;
@@ -75,7 +75,7 @@ export async function appendImagePage(
   imageBytes: ArrayBuffer,
   mime: string
 ): Promise<{ buffer: ArrayBuffer; pageIndex: number }> {
-  const doc = await PDFDocument.load(arrayBuffer.slice(0));
+  const doc = await PDFDocument.load(arrayBuffer.slice(0), { ignoreEncryption: true });
   const image = mime.includes('png')
     ? await doc.embedPng(imageBytes)
     : await doc.embedJpg(imageBytes);
@@ -203,7 +203,7 @@ export async function buildCleanedDocument(
   const activePages = pages.filter(p => !p.isDeleted);
   if (activePages.length === 0) return null;
 
-  const srcDoc = await PDFDocument.load(arrayBuffer);
+  const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
   const newDoc = await PDFDocument.create();
   const copiedPages = await newDoc.copyPages(srcDoc, activePages.map(p => p.pageIndex));
 
@@ -232,7 +232,7 @@ export async function processAndSplitPDF(
   onProgress?: (done: number, total: number, fileName: string) => void,
   shouldCancel?: () => boolean
 ): Promise<{ fileName: string; data: Uint8Array }[]> {
-  const srcDoc = await PDFDocument.load(arrayBuffer);
+  const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
   const results: { fileName: string; data: Uint8Array }[] = [];
 
   // Filter active pages with valid tags
