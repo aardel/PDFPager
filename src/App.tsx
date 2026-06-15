@@ -436,7 +436,15 @@ export default function App() {
         let workingBuffer = buffer;
         if (initialPages.some(isAppendedPage)) {
           const restored: ProcessedPage[] = [];
+          // Keep every blob the session still references, regardless of whether
+          // this load could read it — a transient IndexedDB miss must not cause
+          // pruneCoverImages to delete a cover/insert permanently (it can
+          // recover on the next reload).
           const keep = new Set<string>();
+          for (const p of initialPages) {
+            if (p.isCover && p.coverId) keep.add(p.coverId);
+            if (p.isInserted && p.insertId) keep.add(p.insertId);
+          }
           const insertIndices = new Map<string, number[]>();
           const insertCounters = new Map<string, number>();
           for (const p of initialPages) {
