@@ -101,6 +101,7 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
     <div
       ref={setNodeRef}
       style={style}
+      data-thumb-id={id}
       className={`thumb-card${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}${isSplitActive ? ' split-active' : ''}${isDeleted ? ' deleted' : ''}${isDragging ? ' dragging' : ''}`}
       onClick={onClick}
       onContextMenu={onContextMenu ? (e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(e); } : undefined}

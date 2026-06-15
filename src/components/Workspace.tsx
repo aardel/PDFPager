@@ -148,6 +148,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
   // Scroll-to functions exposed by each ScrollablePreview
   const scrollToPageRef = useRef<((idx: number) => void) | null>(null);
+  const topPaneRef = useRef<HTMLDivElement>(null);
   const scrollToSplitRef = useRef<((idx: number) => void) | null>(null);
   // Set to true before a programmatic index change so the effect can trigger a scroll
   const shouldScrollRef = useRef(false);
@@ -526,6 +527,22 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     if (newPrimary >= 0) setPrimaryIndex(newPrimary);
   };
 
+  // Clicking a section in the bottom pane: select its pages, make its first
+  // page active, and scroll both the preview and the thumbnail pane to it.
+  const jumpToSection = (entries: { page: ProcessedPage; idx: number }[]) => {
+    if (!entries.length) return;
+    setSelectedIds(new Set(entries.map(e => e.page.id)));
+    const first = entries[0];
+    setLastClickedIndex(first.idx);
+    shouldScrollRef.current = true;
+    setPrimaryIndex(first.idx);
+    requestAnimationFrame(() => {
+      const matches = topPaneRef.current?.querySelectorAll(`[data-thumb-id="${first.page.id}"]`);
+      const el = Array.from(matches ?? []).find(e => (e as HTMLElement).offsetParent !== null);
+      (el as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  };
+
   // Stats
   const activePage = pages[primaryIndex];
   const splitPage = splitIndex !== null ? pages[splitIndex] : null;
@@ -534,11 +551,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const activeCount = pages.length - deletedCount;
   const taggedCount = pages.filter(p => !p.isDeleted && p.tag).length;
   const multiSelected = selectedIds.size > 1;
-
-  const tagCounts: Record<string, number> = {};
-  pages.forEach(p => {
-    if (!p.isDeleted && p.tag) tagCounts[p.tag] = (tagCounts[p.tag] || 0) + 1;
-  });
 
   // Sidebar grouped view — untagged → preset order → orphan tags → deleted
   const sidebarGroups = useMemo(() => {
@@ -630,6 +642,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           </div>
         </div>
 
+        {/* Top pane — thumbnails (fixed ~50%, scrolls independently) */}
+        <div className="sidebar-top-pane" ref={topPaneRef}>
         {/* Sortable thumbnails — Pages view */}
         <div className="sidebar-scroll" style={{ display: sidebarView === 'pages' ? undefined : 'none' }}>
           <DndContext
@@ -764,6 +778,48 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           </div>
           </DndContext>
         )}
+        </div>{/* /sidebar-top-pane */}
+
+        {/* Bottom pane — section names (fixed ~50%, scrolls independently) so
+            thumbnails above are never pushed out of view. */}
+        <div className="sidebar-sections-pane">
+          <div className="sidebar-sections-title">Sections</div>
+          {sidebarGroups.length === 0 && (
+            <div className="sidebar-sections-empty">No pages yet.</div>
+          )}
+          {sidebarGroups.map(group => {
+            const isDeleted = group.key === '__deleted__';
+            const isUntagged = group.key === '__untagged__';
+            const tag = group.tag;
+            const name = isUntagged ? 'Untagged' : isDeleted ? 'Deleted' : tag!;
+            const firstIdx = group.entries[0]?.idx;
+            const active = firstIdx != null && primaryIndex === firstIdx;
+            const modified = tag ? isExportNameModified(tag, exportNames) : false;
+            return (
+              <div
+                key={group.key}
+                className={`sidebar-section-row${active ? ' active' : ''}${isDeleted ? ' deleted' : ''}${isUntagged ? ' untagged' : ''}`}
+                onClick={() => jumpToSection(group.entries)}
+                title="Jump to this section"
+              >
+                <span className="sidebar-section-name tag-label-text">
+                  {name}{modified && tag ? ` → ${getExportFileName(tag, exportNames)}` : ''}
+                </span>
+                <span className="sidebar-section-count">{group.entries.length}p</span>
+                {!isDeleted && !isUntagged && (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    style={{ flexShrink: 0, padding: '2px 8px' }}
+                    onClick={(e) => { e.stopPropagation(); onExport(tag); }}
+                    disabled={isExporting}
+                  >
+                    Save
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
 
         {/* Footer */}
         <div className="sidebar-footer">
@@ -776,33 +832,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               <FolderOpen size={13} />
             </button>
           </div>
-
-          {Object.keys(tagCounts).length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <span className="settings-section-title">Export groups</span>
-              {Object.entries(tagCounts).map(([tag]) => {
-                const modified = isExportNameModified(tag, exportNames);
-                const fileName = getExportFileName(tag, exportNames);
-                return (
-                  <div key={tag} className="sidebar-export-row">
-                    <div className="sidebar-export-labels">
-                      <span className="tag-label-text" style={{ fontSize: 12, fontWeight: 600 }}>{tag}</span>
-                      {modified && (
-                        <>
-                          <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>→</span>
-                          <span className="export-name-text" style={{ fontSize: 12, fontWeight: 500 }}>{fileName}</span>
-                        </>
-                      )}
-                      <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{tagCounts[tag]}p</span>
-                    </div>
-                    <button className="btn btn-secondary btn-sm" onClick={() => onExport(tag)} disabled={isExporting} style={{ flexShrink: 0 }}>
-                      Save
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
 
           <button
             className="btn btn-primary"

@@ -417,6 +417,63 @@ input[type="text"]:focus {
   padding: 8px;
 }
 
+/* Fixed 50/50 split: thumbnails on top, section names below — so thumbnails
+   stay visible no matter how many pages are tagged. */
+.sidebar-top-pane {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-sections-pane {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--separator);
+  padding: 6px 8px 8px;
+}
+.sidebar-sections-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: 2px 4px 6px;
+  position: sticky;
+  top: 0;
+  background: var(--bg-sidebar);
+}
+.sidebar-section-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.sidebar-section-row:hover { background: var(--bg-hover); }
+.sidebar-section-row.active { background: var(--accent-light); }
+.sidebar-section-row .sidebar-section-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.sidebar-section-row .sidebar-section-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.sidebar-section-row.deleted .sidebar-section-name { color: var(--danger); }
+.sidebar-section-row.untagged .sidebar-section-name { color: var(--text-secondary); font-weight: 500; }
+.sidebar-sections-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 6px 8px;
+}
+
 .thumbnail-strip {
   display: flex;
   flex-direction: column;
