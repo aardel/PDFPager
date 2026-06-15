@@ -16,17 +16,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 if (!(window as any).electronAPI && 'serviceWorker' in navigator && window.isSecureContext) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').then((reg) => {
-      // Pick up deploys without requiring users to know about hard-refresh.
+      // Fetch any new version in the background, but DON'T force-reload — a
+      // surprise reload mid-task (tagging, cropping, scanning) would interrupt
+      // work. The update applies on the user's next normal page load.
       reg.update();
-      reg.addEventListener('updatefound', () => {
-        const installing = reg.installing;
-        if (!installing) return;
-        installing.addEventListener('statechange', () => {
-          if (installing.state === 'activated' && navigator.serviceWorker.controller) {
-            window.location.reload();
-          }
-        });
-      });
     }).catch(() => { /* offline support is best-effort */ });
   });
 }
