@@ -23,7 +23,7 @@ export const TagPopup: React.FC<TagPopupProps> = ({
 }) => {
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [value, setValue] = useState(currentTag ?? '');
+  const [value, setValue] = useState((currentTag ?? '').toUpperCase());
   const [pos, setPos] = useState({ left: x, top: y });
 
   // Current word = text after the last space; that's what we complete.
@@ -97,7 +97,8 @@ export const TagPopup: React.FC<TagPopupProps> = ({
           value={value}
           spellCheck={false}
           placeholder="Type a tag…"
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => setValue(e.target.value.toUpperCase())}
+          style={{ textTransform: 'uppercase' }}
           onKeyDown={onKeyDown}
         />
       </div>
