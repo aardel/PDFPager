@@ -60,3 +60,28 @@ export function suggestCompletion(prefix: string): string | null {
   }
   return best ? best.w : null;
 }
+
+/** All stored words, most-used first. */
+export function listWords(): Entry[] {
+  const s = load();
+  return Object.values(s).sort((a, b) => b.n - a.n || a.w.localeCompare(b.w));
+}
+
+/** Add a word to the store (or bump its count if it already exists). */
+export function addWord(word: string): boolean {
+  const w = word.trim();
+  if (w.length < 2 || /\s/.test(w)) return false;
+  const s = load();
+  const k = w.toLowerCase();
+  if (s[k]) { s[k].n++; s[k].w = w; }
+  else s[k] = { w, n: 1 };
+  save(s);
+  return true;
+}
+
+/** Remove a word from the store. */
+export function removeWord(word: string): void {
+  const s = load();
+  delete s[word.trim().toLowerCase()];
+  save(s);
+}

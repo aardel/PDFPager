@@ -5,6 +5,7 @@ interface LargePagePreviewProps {
   pageIndex: number;
   rotation: number;
   zoom?: number;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 export const LargePagePreview: React.FC<LargePagePreviewProps> = ({
@@ -12,28 +13,32 @@ export const LargePagePreview: React.FC<LargePagePreviewProps> = ({
   pageIndex,
   rotation,
   zoom = 1.0,
+  onContextMenu,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [containerVersion, setContainerVersion] = useState(0);
-  // CSS display size at zoom=1 (fit). Zoom is applied by scaling this with CSS only.
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  // CSS display size at zoom=1 (fit). Zoom is applied when painting to screen.
   const [fitSize, setFitSize] = useState({ w: 0, h: 0 });
-  // Track whether we've rendered at least once for this page — suppresses spinner on resize
   const hasRenderedPage = useRef<number | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setContainerVersion(v => v + 1));
+    const update = () => {
+      setContainerSize({ w: el.clientWidth, h: el.clientHeight });
+    };
+    update();
+    const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // Re-render when page/rotation/container size changes — NOT when zoom changes
+  // Re-render PDF when page/rotation/container size changes — NOT when zoom changes
   useEffect(() => {
-    if (!pdfDoc || !canvasRef.current || !containerRef.current) return;
+    if (!pdfDoc || !canvasRef.current || containerSize.w < 10 || containerSize.h < 10) return;
     let active = true;
     let renderTask: any = null;
 
@@ -52,12 +57,10 @@ export const LargePagePreview: React.FC<LargePagePreviewProps> = ({
         const rot = (page.rotate + rotation) % 360;
         const native = page.getViewport({ scale: 1, rotation: rot });
 
-        const container = containerRef.current!;
-        const availW = Math.max(container.clientWidth - 48, 100);
-        const availH = Math.max(container.clientHeight - 48, 100);
+        const availW = Math.max(containerSize.w, 100);
+        const availH = Math.max(containerSize.h, 100);
 
         const fitScale = Math.min(availW / native.width, availH / native.height);
-        // Render at 2× for crisp quality — zoom is purely CSS, never triggers a re-render
         const renderScale = Math.min(fitScale * 2, 4.0);
 
         const viewport = page.getViewport({ scale: renderScale, rotation: rot });
@@ -88,28 +91,37 @@ export const LargePagePreview: React.FC<LargePagePreviewProps> = ({
       active = false;
       try { renderTask?.cancel(); } catch {}
     };
-  }, [pdfDoc, pageIndex, rotation, containerVersion]); // zoom intentionally excluded
+  }, [pdfDoc, pageIndex, rotation, containerSize.w, containerSize.h]);
 
-  const displayW = fitSize.w * zoom;
-  const displayH = fitSize.h * zoom;
+  let displayW = fitSize.w * zoom;
+  let displayH = fitSize.h * zoom;
+  const needsScroll = zoom > 1.001;
+
+  // At fit zoom, never exceed the visible pane (guards layout timing / toolbar resize).
+  if (!needsScroll && containerSize.w > 0 && containerSize.h > 0 && fitSize.w > 0) {
+    const scale = Math.min(
+      1,
+      containerSize.w / displayW,
+      containerSize.h / displayH,
+    );
+    displayW *= scale;
+    displayH *= scale;
+  }
 
   return (
     <div
       ref={containerRef}
+      className="large-page-preview"
       style={{
-        width: '100%',
-        height: '100%',
-        overflow: zoom > 1 ? 'auto' : 'hidden',
-        display: 'flex',
-        alignItems: zoom > 1 ? 'flex-start' : 'center',
-        justifyContent: zoom > 1 ? 'flex-start' : 'center',
-        padding: zoom > 1 ? 24 : 0,
-        position: 'relative',
-        boxSizing: 'border-box',
+        overflow: needsScroll ? 'auto' : 'hidden',
+        alignItems: needsScroll ? 'flex-start' : 'center',
+        justifyContent: needsScroll ? 'flex-start' : 'center',
+        padding: needsScroll ? 12 : 0,
       }}
+      onContextMenu={onContextMenu}
     >
       {loading && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2 }}>
+        <div className="large-page-preview-loading">
           <div className="spinner" />
         </div>
       )}
@@ -117,12 +129,15 @@ export const LargePagePreview: React.FC<LargePagePreviewProps> = ({
       <canvas
         ref={canvasRef}
         style={{
-          // CSS dimensions change instantly on zoom — no re-render triggered
           width: displayW > 0 ? displayW : undefined,
           height: displayH > 0 ? displayH : undefined,
+          maxWidth: needsScroll ? undefined : '100%',
+          maxHeight: needsScroll ? undefined : '100%',
           display: loading && hasRenderedPage.current !== pageIndex ? 'none' : 'block',
           flexShrink: 0,
           borderRadius: 2,
+          background: '#fff',
+          boxShadow: '0 2px 12px rgba(0,0,0,0.12)',
         }}
       />
     </div>

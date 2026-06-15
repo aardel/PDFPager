@@ -20,3 +20,20 @@ export function isExportNameModified(tag: string, exportNames: Record<string, st
 export function filterBasicPresets(presets: string[]): string[] {
   return presets.filter(p => !/\*\*\*[^*]+\*\*\*/.test(p));
 }
+
+/** Unique tags assigned to non-deleted pages, in first-seen document order. */
+export function collectUsedTags(
+  pages: { isDeleted?: boolean; tag?: string }[]
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of pages) {
+    if (p.isDeleted || !p.tag?.trim()) continue;
+    const t = p.tag.trim();
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}

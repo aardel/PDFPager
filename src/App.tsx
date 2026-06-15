@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Workspace } from './components/Workspace';
-import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, bakeCrops, cropSignature, ProcessedPage, CropRect, ExportCancelled } from './utils/pdfProcessor';
+import { WorkspaceViewBar } from './components/WorkspaceViewBar';
+import type { WorkspaceChrome } from './components/workspaceChrome';
+import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, appendPdfPages, bakeCrops, cropSignature, ProcessedPage, CropRect, ExportCancelled, isAppendedPage } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
+import { InsertPdfModal } from './components/InsertPdfModal';
 import { CropModal } from './components/CropModal';
 import { filterBasicPresets, getExportFileName, sanitizeExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
@@ -95,8 +98,9 @@ export default function App() {
   // Checked between files during export; Cancel in the progress toast sets it.
   const exportCancelRef = useRef(false);
   const activeFileKeyRef = useRef<string | null>(null);
+  const [workspaceChrome, setWorkspaceChrome] = useState<WorkspaceChrome | null>(null);
 
-  // Multi-file queue. The active file's buffer/pages live in the states
+  // Multi-file queue.
   // above; everything else is just File handles until switched to.
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -106,6 +110,12 @@ export default function App() {
 
   // Mobile cover scanning
   const [showScanModal, setShowScanModal] = useState(false);
+
+  // Insert external PDF at top of a tag section
+  const insertPdfInputRef = useRef<HTMLInputElement>(null);
+  const [insertPdfPending, setInsertPdfPending] = useState<{
+    bytes: ArrayBuffer; name: string; pageCount: number;
+  } | null>(null);
 
   // Undo/redo history for page mutations (delete, rotate, tag, reorder).
   // Snapshots are just the pages array (small metadata objects, no canvases),
@@ -298,6 +308,55 @@ export default function App() {
     handleSetPages(next);    // records undo history
   }, [handleSetPages]);
 
+  // Inserts page(s) from an external PDF using the same buffer-append +
+  // array-position rules as handleInsertCover. Source bytes are stored in
+  // IndexedDB so inserts survive closing and reopening the file.
+  const handleInsertPdf = useCallback(async (pdfBytes: ArrayBuffer, tag: string | null) => {
+    const src = sourceBufferRef.current;
+    if (!src) throw new Error('No document is open.');
+    const { buffer, pageIndices } = await appendPdfPages(src, pdfBytes);
+    const insertId = crypto.randomUUID();
+    const fileKey = activeFileKeyRef.current;
+    if (fileKey) {
+      try { await saveCoverImage(insertId, fileKey, pdfBytes, 'application/pdf'); } catch { /* best-effort */ }
+    }
+    const current = pagesRef.current;
+    let nextId = current.reduce((m, p) => Math.max(m, p.id), 0);
+    const newPages: ProcessedPage[] = pageIndices.map(pageIndex => ({
+      id: ++nextId,
+      pageIndex,
+      isDeleted: false,
+      isBlank: false,
+      rotation: 0,
+      tag: tag ?? undefined,
+      isInserted: true,
+      insertId,
+    }));
+    let insertAt = 0;
+    if (tag) {
+      const idx = current.findIndex(p => p.tag === tag && !p.isDeleted);
+      insertAt = idx >= 0 ? idx : 0;
+    }
+    const next = [...current.slice(0, insertAt), ...newPages, ...current.slice(insertAt)];
+    setSourceBuffer(buffer);
+    handleSetPages(next);
+  }, [handleSetPages]);
+
+  const handleInsertPdfFileSelect = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const bytes = reader.result as ArrayBuffer;
+        const pageCount = await getPdfPageCount(bytes);
+        if (pageCount === 0) throw new Error('The PDF has no pages.');
+        setInsertPdfPending({ bytes, name: file.name, pageCount });
+      } catch {
+        alert(`Could not read "${file.name}". Please ensure it is a valid, unencrypted PDF.`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
   // Sets/clears a page's crop. The rebake effect picks up the metadata change
   // and re-derives pdfBuffer; export inherits the crop via the baked CropBox.
   const handleCropPage = useCallback((pageId: number, crop: CropRect | null) => {
@@ -351,6 +410,9 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = async () => {
       try {
+        // Feed the original bytes straight to pdf.js — it decrypts standard
+        // encryption natively. (Re-saving through pdf-lib first corrupts
+        // encrypted streams, since pdf-lib can't decrypt them.)
         const buffer = reader.result as ArrayBuffer;
         const pageCount = await getPdfPageCount(buffer);
         if (token !== loadTokenRef.current) return; // superseded by a newer switch
@@ -368,23 +430,44 @@ export default function App() {
           })
         );
 
-        // Restore scanned covers: re-append each one's image (bytes kept in
-        // IndexedDB) to the freshly loaded buffer. The saved pageIndex is
-        // stale — appending assigns the real one. Covers whose bytes are
-        // gone are dropped; stale bytes for this file are pruned.
+        // Restore appended pages (phone covers + inserted PDFs): re-append
+        // bytes from IndexedDB onto the freshly loaded buffer. Saved
+        // pageIndex values are stale — appending assigns the real ones.
         let workingBuffer = buffer;
-        if (initialPages.some(p => p.isCover)) {
+        if (initialPages.some(isAppendedPage)) {
           const restored: ProcessedPage[] = [];
           const keep = new Set<string>();
+          const insertIndices = new Map<string, number[]>();
+          const insertCounters = new Map<string, number>();
           for (const p of initialPages) {
-            if (!p.isCover) { restored.push(p); continue; }
-            if (!p.coverId) continue;
-            const img = await loadCoverImage(p.coverId).catch(() => null);
-            if (!img) continue;
-            const res = await appendImagePage(workingBuffer, img.bytes, img.mime);
-            workingBuffer = res.buffer;
-            restored.push({ ...p, pageIndex: res.pageIndex });
-            keep.add(p.coverId);
+            if (!isAppendedPage(p)) { restored.push(p); continue; }
+            if (p.isCover) {
+              if (!p.coverId) continue;
+              const img = await loadCoverImage(p.coverId).catch(() => null);
+              if (!img) continue;
+              const res = await appendImagePage(workingBuffer, img.bytes, img.mime);
+              workingBuffer = res.buffer;
+              restored.push({ ...p, pageIndex: res.pageIndex });
+              keep.add(p.coverId);
+              continue;
+            }
+            if (p.isInserted) {
+              if (!p.insertId) continue;
+              if (!insertIndices.has(p.insertId)) {
+                const pdf = await loadCoverImage(p.insertId).catch(() => null);
+                if (!pdf) continue;
+                const res = await appendPdfPages(workingBuffer, pdf.bytes);
+                workingBuffer = res.buffer;
+                insertIndices.set(p.insertId, res.pageIndices);
+                insertCounters.set(p.insertId, 0);
+                keep.add(p.insertId);
+              }
+              const indices = insertIndices.get(p.insertId)!;
+              const n = insertCounters.get(p.insertId)!;
+              if (n >= indices.length) continue;
+              restored.push({ ...p, pageIndex: indices[n] });
+              insertCounters.set(p.insertId, n + 1);
+            }
           }
           initialPages = restored;
           pruneCoverImages(fileKey, keep).catch(() => {});
@@ -643,9 +726,9 @@ export default function App() {
           </div>
         )}
 
-        {/* Right side — logout; the settings gear is fixed top-right inside
-            Workspace, so leave clearance for it. */}
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', marginRight: pdfFile ? 44 : 8 }}>
+        {/* Right side — view controls + logout; settings gear is fixed top-right in Workspace */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, marginRight: pdfFile ? 44 : 8 }}>
+          {workspaceChrome && <WorkspaceViewBar chrome={workspaceChrome} />}
           {authRequired() && (
             <button
               className="btn btn-sm btn-secondary"
@@ -683,8 +766,10 @@ export default function App() {
             onExport={handleExport}
             onBack={handleBackToWelcome}
             onScanCover={() => setShowScanModal(true)}
+            onInsertPdf={() => insertPdfInputRef.current?.click()}
             onRequestCrop={(pageId) => setCropTargetId(pageId)}
             onReadjustCover={handleReadjustCover}
+            onChromeChange={setWorkspaceChrome}
             isExporting={isExporting}
             exportProgress={exportProgress}
             onCancelExport={cancelExport}
@@ -697,6 +782,31 @@ export default function App() {
           tags={[...new Set(pages.filter(p => p.tag && !p.isDeleted).map(p => p.tag as string))]}
           onInsert={handleInsertCover}
           onClose={() => setShowScanModal(false)}
+        />
+      )}
+
+      <input
+        ref={insertPdfInputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) handleInsertPdfFileSelect(file);
+        }}
+      />
+
+      {insertPdfPending && pdfFile && (
+        <InsertPdfModal
+          tags={[...new Set(pages.filter(p => p.tag && !p.isDeleted).map(p => p.tag as string))]}
+          fileName={insertPdfPending.name}
+          pageCount={insertPdfPending.pageCount}
+          onInsert={async (tag) => {
+            await handleInsertPdf(insertPdfPending.bytes, tag);
+            setInsertPdfPending(null);
+          }}
+          onClose={() => setInsertPdfPending(null)}
         />
       )}
 

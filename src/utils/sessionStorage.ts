@@ -1,4 +1,4 @@
-import { ProcessedPage } from './pdfProcessor';
+import { ProcessedPage, isAppendedPage } from './pdfProcessor';
 
 const SESSION_PREFIX = 'pdf_pager_session_';
 
@@ -29,7 +29,7 @@ export function loadSession(fileKey: string, pageCount: number): StoredSession |
     if (!Array.isArray(session.pages)) return null;
     // Covers are extra entries on top of the original pages — validate the
     // count against the non-cover entries only.
-    if (session.pages.filter(p => !p.isCover).length !== pageCount) return null;
+    if (session.pages.filter(p => !isAppendedPage(p)).length !== pageCount) return null;
     return session;
   } catch {
     return null;
@@ -46,7 +46,7 @@ export function saveSession(
     fileKey,
     fileName,
     // pageCount = the ORIGINAL file's page count (covers are appended extras).
-    pageCount: pages.filter(p => !p.isCover).length,
+    pageCount: pages.filter(p => !isAppendedPage(p)).length,
     pages,
     exportNames,
     savedAt: Date.now(),

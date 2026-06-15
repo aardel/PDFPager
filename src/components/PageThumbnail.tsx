@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { detectIfPageIsBlank } from '../utils/pdfProcessor';
+import { runThumbRender, SIDEBAR_THUMB_SCALE } from '../utils/thumbRender';
 import { X, Check } from 'lucide-react';
 
 interface PageThumbnailProps {
@@ -39,10 +40,25 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
   onClick,
   onContextMenu,
 }) => {
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loading, setLoading] = useState(true);
+  const [visible, setVisible] = useState(false);
+
+  // Keep blank-detection callbacks out of the render effect's deps — they
+  // change identity every parent render and would otherwise cancel/restart
+  // every thumbnail render on each keystroke (thrashes large documents).
+  const isBlankRef = useRef(isBlank);
+  isBlankRef.current = isBlank;
+  const onMarkBlankRef = useRef(onMarkBlank);
+  onMarkBlankRef.current = onMarkBlank;
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: disableDrag });
+
+  const setRef = (el: HTMLDivElement | null) => {
+    rootRef.current = el;
+    setNodeRef(el);
+  };
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -50,7 +66,18 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
   };
 
   useEffect(() => {
-    if (!pdfDoc) return;
+    const el = rootRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      ([entry]) => setVisible(entry.isIntersecting),
+      { rootMargin: '200px 0px' }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!pdfDoc || !visible) return;
     let active = true;
     let renderTask: any = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,25 +86,28 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
       if (!canvasRef.current) return;
       try {
         setLoading(true);
-        const page = await pdfDoc.getPage(pageIndex + 1);
-        if (!active) return;
+        await runThumbRender(async () => {
+          const page = await pdfDoc.getPage(pageIndex + 1);
+          if (!active || !canvasRef.current) return;
 
-        const viewport = page.getViewport({ scale: 0.28, rotation: (page.rotate + rotation) % 360 });
-        const ctx = canvasRef.current.getContext('2d');
-        if (!ctx) return;
+          const viewport = page.getViewport({
+            scale: SIDEBAR_THUMB_SCALE,
+            rotation: (page.rotate + rotation) % 360,
+          });
+          const ctx = canvasRef.current.getContext('2d');
+          if (!ctx) return;
 
-        canvasRef.current.height = viewport.height;
-        canvasRef.current.width = viewport.width;
+          canvasRef.current.height = viewport.height;
+          canvasRef.current.width = viewport.width;
 
-        renderTask = page.render({ canvasContext: ctx, viewport });
-        await renderTask.promise;
+          renderTask = page.render({ canvasContext: ctx, viewport });
+          await renderTask.promise;
 
-        // Blank detection only after a COMPLETED render — a cancelled or
-        // failed render leaves a cleared canvas that would always look blank.
-        if (active && canvasRef.current) {
-          const detectedBlank = detectIfPageIsBlank(canvasRef.current);
-          if (detectedBlank && !isBlank) onMarkBlank(true);
-        }
+          if (active && canvasRef.current) {
+            const detectedBlank = detectIfPageIsBlank(canvasRef.current);
+            if (detectedBlank && !isBlankRef.current) onMarkBlankRef.current(true);
+          }
+        });
       } catch (err: any) {
         if (err?.name === 'RenderingCancelledException') return;
         console.error(`Thumbnail render failed (page ${pageIndex + 1}, rotation ${rotation}, attempt ${attempt + 1}):`, err);
@@ -95,11 +125,11 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
       if (retryTimer) clearTimeout(retryTimer);
       try { renderTask?.cancel(); } catch {}
     };
-  }, [pageIndex, pdfDoc, rotation]);
+  }, [pageIndex, pdfDoc, rotation, visible]);
 
   return (
     <div
-      ref={setNodeRef}
+      ref={setRef}
       style={style}
       data-thumb-id={id}
       className={`thumb-card${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}${isSplitActive ? ' split-active' : ''}${isDeleted ? ' deleted' : ''}${isDragging ? ' dragging' : ''}`}
@@ -113,7 +143,6 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
         className={`thumb-select-dot${isSelected ? ' checked' : ''}`}
         onClick={(e) => {
           e.stopPropagation();
-          // Simulate a ctrl-click to toggle selection without changing preview
           onClick({ ...e, ctrlKey: true } as React.MouseEvent);
         }}
       >
@@ -132,14 +161,12 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
         {isDeleted && <div className="thumb-deleted-line" />}
       </div>
 
-      {/* Meta — tag pill only (page number intentionally hidden) */}
       {tag && !isDeleted && (
         <div className="thumb-meta">
           <span className="thumb-tag-pill tag-label-text">{tag}</span>
         </div>
       )}
 
-      {/* Delete / restore button */}
       <button
         className="thumb-delete-btn"
         style={isDeleted ? { opacity: 1, background: 'var(--danger)', color: 'white', borderColor: 'var(--danger)' } : {}}

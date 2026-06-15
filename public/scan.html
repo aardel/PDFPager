@@ -247,6 +247,12 @@ async function claimPin() {
 
 init();
 
+/* ============================== quality ==============================
+   Keep in sync with src/utils/scanQuality.ts */
+const SCAN_JPEG_QUALITY = 0.96;
+const SCAN_PHONE_GALLERY_MAX_PX = 4096;
+const SCAN_PHONE_CAMERA_IDEAL_PX = 3840;
+
 /* ============================== camera ==============================
    The phone is capture-only: no edge detection, no straightening — the
    desktop's corner editor (with auto-detect + loupe) handles all of
@@ -277,7 +283,11 @@ async function startCamera() {
     // a zombie tab) otherwise fails silently forever.
     stream = await Promise.race([
       navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1920 } },
+        video: {
+          facingMode: 'environment',
+          width: { ideal: SCAN_PHONE_CAMERA_IDEAL_PX, min: 1920 },
+          height: { ideal: SCAN_PHONE_CAMERA_IDEAL_PX, min: 1920 },
+        },
         audio: false,
       }),
       new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('Camera did not start within 10s'), { name: 'TimeoutError' })), 10000)),
@@ -340,7 +350,7 @@ function onGalleryPick(e) {
   const img = new Image();
   img.onload = () => {
     // Cap the working resolution; 12MP+ originals only slow everything down.
-    const MAX = 3000;
+    const MAX = SCAN_PHONE_GALLERY_MAX_PX;
     const k = Math.min(1, MAX / Math.max(img.width, img.height));
     photo.width = Math.round(img.width * k);
     photo.height = Math.round(img.height * k);
@@ -365,7 +375,7 @@ function enterPreview() {
     previewUrl = URL.createObjectURL(blob);
     document.getElementById('previewImg').src = previewUrl;
     show('preview');
-  }, 'image/jpeg', 0.92);
+  }, 'image/jpeg', SCAN_JPEG_QUALITY);
 }
 
 function retake() {

@@ -17,37 +17,38 @@ import {
 } from '@dnd-kit/sortable';
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import { PageThumbnail } from './PageThumbnail';
-import { ScrollablePreview } from './ScrollablePreview';
+import { LargePagePreview } from './LargePagePreview';
+import { SectionGridPreview } from './SectionGridPreview';
 import { BasicTagsEditor } from './BasicTagsEditor';
+import { WordListEditor } from './WordListEditor';
 import { TagPopup } from './TagPopup';
-import { recordTagWords, seedWords } from '../utils/wordStore';
+import { PageContextMenu } from './PageContextMenu';
+import type { MainViewMode, WorkspaceChrome } from './workspaceChrome';
 import { ProcessedPage, loadPdfDocument } from '../utils/pdfProcessor';
 import { supportsFileSystemAccess, pickOutputDirectory } from '../utils/fileSystem';
 import {
   getExportFileName,
   isExportNameModified,
   sanitizeExportFileName,
+  collectUsedTags,
 } from '../utils/tagUtils';
+import { seedWords, recordTagWords, listWords } from '../utils/wordStore';
 import {
   FolderOpen,
   RotateCw,
   RotateCcw,
   Crop,
   Scan,
+  FilePlus,
   Trash2,
   Settings,
   X,
   Play,
   Tag,
-  Columns2,
-  ZoomIn,
-  ZoomOut,
   Maximize2,
-  Tags,
+  Type,
   ChevronDown,
   ChevronRight,
-  List,
-  LayoutList,
   Undo2,
   Redo2,
   Smartphone,
@@ -74,11 +75,13 @@ interface WorkspaceProps {
   onExport: (targetTag?: string) => void;
   onBack: () => void;
   onScanCover: () => void;
+  onInsertPdf: () => void;
   isExporting: boolean;
   exportProgress: string;
   onCancelExport: () => void;
   onRequestCrop: (pageId: number) => void;
   onReadjustCover: (pageId: number) => void;
+  onChromeChange?: (chrome: WorkspaceChrome | null) => void;
 }
 
 const ZOOM_STEPS = [1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
@@ -115,11 +118,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onExport,
   onBack,
   onScanCover,
+  onInsertPdf,
   isExporting,
   exportProgress,
   onCancelExport,
   onRequestCrop,
   onReadjustCover,
+  onChromeChange,
 }) => {
   // Primary preview index
   const [primaryIndex, setPrimaryIndex] = useState(0);
@@ -144,43 +149,40 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const [loadingPdf, setLoadingPdf] = useState(true);
   // Settings panel
   const [showSettings, setShowSettings] = useState(false);
-  const [showTagsPanel, setShowTagsPanel] = useState(false);
+  const [showWordsPanel, setShowWordsPanel] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
-  const tagsPanelRef = useRef<HTMLDivElement>(null);
-
-  // Scroll-to functions exposed by each ScrollablePreview
-  const scrollToPageRef = useRef<((idx: number) => void) | null>(null);
+  const wordsPanelRef = useRef<HTMLDivElement>(null);
   const topPaneRef = useRef<HTMLDivElement>(null);
-  const scrollToSplitRef = useRef<((idx: number) => void) | null>(null);
-  // Set to true before a programmatic index change so the effect can trigger a scroll
-  const shouldScrollRef = useRef(false);
-  const shouldScrollSplitRef = useRef(false);
 
-  // When primaryIndex changes programmatically, scroll left pane
-  useEffect(() => {
-    if (shouldScrollRef.current) {
-      shouldScrollRef.current = false;
-      scrollToPageRef.current?.(primaryIndex);
-    }
-  }, [primaryIndex]);
-
-  // When splitIndex changes programmatically, scroll right pane
-  useEffect(() => {
-    if (shouldScrollSplitRef.current && splitIndex !== null) {
-      shouldScrollSplitRef.current = false;
-      scrollToSplitRef.current?.(splitIndex);
-    }
-  }, [splitIndex]);
-
+  const lastGridSectionRef = useRef('__untagged__');
   // Sidebar view: 'pages' = flat ordered list, 'groups' = grouped by tag
   // Seed the autocomplete word store from the tag presets so suggestions
   // work from the first use.
   useEffect(() => { seedWords(presets); }, [presets]);
 
   const [sidebarView, setSidebarView] = useState<'pages' | 'groups'>('groups');
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const toggleGroup = (key: string) =>
-    setCollapsedGroups(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  // Tagged sections start collapsed; only Untagged is open until the user expands others.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [untaggedCollapsed, setUntaggedCollapsed] = useState(false);
+  const toggleGroup = (key: string) => {
+    if (key === '__untagged__') {
+      setUntaggedCollapsed(prev => !prev);
+      return;
+    }
+    setExpandedGroups(prev => {
+      const n = new Set(prev);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
+  };
+
+  // Section grid in the main preview (opened from the Sections list).
+  const [sectionGrid, setSectionGrid] = useState<{
+    key: string;
+    label: string;
+    entries: { page: ProcessedPage; idx: number }[];
+  } | null>(null);
+  const inGridMode = sectionGrid !== null;
 
   // Resizable sidebar width
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -228,6 +230,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
   // Right-click tag menu
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pageIdx: number } | null>(null);
+  const [tagEditorMenu, setTagEditorMenu] = useState<{
+    x: number;
+    y: number;
+    pageIdx: number;
+    initialValue?: string;
+  } | null>(null);
 
   // Inline export-name edit in group header (keyed by tag string)
   const [editingExportTag, setEditingExportTag] = useState<string | null>(null);
@@ -238,15 +246,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   // Re-tag conflict prompt: tagging pages with a tag already used elsewhere.
   const [tagConflict, setTagConflict] = useState<{ tag: string; targets: Set<number> } | null>(null);
 
-  // Close tags panel on outside click
+  // Close words panel on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (tagsPanelRef.current && !tagsPanelRef.current.contains(e.target as Node))
-        setShowTagsPanel(false);
+      if (wordsPanelRef.current && !wordsPanelRef.current.contains(e.target as Node))
+        setShowWordsPanel(false);
     };
-    if (showTagsPanel) document.addEventListener('mousedown', handler);
+    if (showWordsPanel) document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [showTagsPanel]);
+  }, [showWordsPanel]);
 
   // Close settings on outside click
   useEffect(() => {
@@ -275,17 +283,78 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     return () => { active = false; };
   }, [pdfBuffer]);
 
+  // New file → open untagged grid (primary tagging surface).
+  useEffect(() => {
+    const entries = pages
+      .map((page, idx) => ({ page, idx }))
+      .filter(({ page }) => !page.isDeleted && !page.tag);
+    setSectionGrid({ key: '__untagged__', label: 'Untagged', entries: [] });
+    setSplitIndex(null);
+    setActivePaneIsLeft(true);
+    if (entries.length) {
+      setSelectedIds(new Set([entries[0].page.id]));
+      setPrimaryIndex(entries[0].idx);
+      setLastClickedIndex(entries[0].idx);
+    } else {
+      setSelectedIds(new Set());
+      setPrimaryIndex(0);
+      setLastClickedIndex(null);
+    }
+  }, [pdfBuffer]);
+
   // Keyboard shortcuts
   useEffect(() => {
+    function navIndices(): number[] {
+      if (!sectionGrid) return pages.map((_, i) => i);
+      if (sectionGrid.key === '__untagged__') {
+        return pages.flatMap((p, i) => (!p.isDeleted && !p.tag ? [i] : []));
+      }
+      if (sectionGrid.key === '__deleted__') {
+        return pages.flatMap((p, i) => (p.isDeleted ? [i] : []));
+      }
+      return pages.flatMap((p, i) => (!p.isDeleted && p.tag === sectionGrid.key ? [i] : []));
+    }
+
     function onKey(e: KeyboardEvent) {
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
-      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-        shouldScrollRef.current = true;
-        setPrimaryIndex(i => Math.min(i + 1, pages.length - 1));
-      } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-        shouldScrollRef.current = true;
-        setPrimaryIndex(i => Math.max(i - 1, 0));
-      } else if (e.key === 'd' || e.key === 'D') {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+
+      const isDown = e.key === 'ArrowDown' || e.key === 'ArrowRight';
+      const isUp = e.key === 'ArrowUp' || e.key === 'ArrowLeft';
+      const nav = navIndices();
+
+      if (e.shiftKey && (isDown || isUp)) {
+        e.preventDefault();
+        const anchor = lastClickedIndex ?? primaryIndex;
+        let pos = nav.indexOf(primaryIndex);
+        if (pos < 0) pos = 0;
+        const delta = isDown ? 1 : -1;
+        const nextPos = Math.max(0, Math.min(nav.length - 1, pos + delta));
+        if (nav.length === 0) return;
+        const next = nav[nextPos];
+        const anchorPos = nav.indexOf(anchor);
+        const a = anchorPos >= 0 ? anchorPos : pos;
+        const minPos = Math.min(a, nextPos);
+        const maxPos = Math.max(a, nextPos);
+        setSelectedIds(new Set(nav.slice(minPos, maxPos + 1).map(i => pages[i].id)));
+        if (lastClickedIndex === null) setLastClickedIndex(anchor);
+        setPrimaryIndex(next);
+        return;
+      }
+
+      if (isDown || isUp) {
+        e.preventDefault();
+        if (!nav.length) return;
+        let pos = nav.indexOf(primaryIndex);
+        if (pos < 0) pos = isDown ? 0 : nav.length - 1;
+        else pos = Math.max(0, Math.min(nav.length - 1, pos + (isDown ? 1 : -1)));
+        setPrimaryIndex(nav[pos]);
+        setSelectedIds(new Set([pages[nav[pos]].id]));
+        setLastClickedIndex(nav[pos]);
+        return;
+      }
+
+      if (e.key === 'd' || e.key === 'D') {
         const page = pages[primaryIndex];
         if (page) toggleDelete(page.id);
       } else if (e.key === 'Escape') {
@@ -306,16 +375,37 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [primaryIndex, pages, presets, selectedIds]);
+  }, [primaryIndex, pages, presets, selectedIds, lastClickedIndex, sectionGrid]);
 
   // Ctrl+wheel zoom
+  const wheelLockRef = useRef(0);
   const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (!e.ctrlKey && !e.metaKey) return;
-    e.preventDefault();
-    setActiveZoomIdx(i => e.deltaY < 0
-      ? Math.min(i + 1, ZOOM_STEPS.length - 1)
-      : Math.max(i - 1, 0));
-  }, [activePaneIsLeft]);
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      setActiveZoomIdx(i => e.deltaY < 0
+        ? Math.min(i + 1, ZOOM_STEPS.length - 1)
+        : Math.max(i - 1, 0));
+      return;
+    }
+    if (inGridMode) return; // grid scrolls natively
+
+    // If the hovered page is zoomed enough to scroll, let native scrolling
+    // handle it; otherwise turn the wheel into page navigation.
+    const scroller = (e.target as HTMLElement).closest('.large-page-preview') as HTMLElement | null;
+    if (scroller && scroller.scrollHeight > scroller.clientHeight + 2) return;
+
+    const now = Date.now();
+    if (now < wheelLockRef.current) return;
+    wheelLockRef.current = now + 110; // ~one page per wheel tick
+    const dir = e.deltaY > 0 ? 1 : -1;
+    const step = (i: number) => {
+      let n = i + dir;
+      while (n >= 0 && n < pages.length && pages[n].isDeleted) n += dir;
+      return (n >= 0 && n < pages.length && !pages[n].isDeleted) ? n : i;
+    };
+    if (isSplitView && !activePaneIsLeft) setSplitIndex(i => (i == null ? i : step(i)));
+    else setPrimaryIndex(step);
+  }, [inGridMode, isSplitView, activePaneIsLeft, pages]);
 
   // Thumbnail click — supports Shift/Cmd multi-select; otherwise loads into active pane
   const handleThumbClick = useCallback((idx: number, e: React.MouseEvent) => {
@@ -337,18 +427,60 @@ export const Workspace: React.FC<WorkspaceProps> = ({
       });
     } else {
       // Normal click — load into whichever pane is active
+      if (sectionGrid) lastGridSectionRef.current = sectionGrid.key;
+      setSectionGrid(null);
       setSelectedIds(new Set([pageId]));
       if (isSplitView && !activePaneIsLeft) {
-        shouldScrollSplitRef.current = true;
         setSplitIndex(idx);
       } else {
-        shouldScrollRef.current = true;
         setPrimaryIndex(idx);
       }
     }
 
     setLastClickedIndex(idx);
-  }, [pages, lastClickedIndex, isSplitView, activePaneIsLeft]);
+  }, [pages, lastClickedIndex, isSplitView, activePaneIsLeft, sectionGrid]);
+
+  const handleGridPageClick = useCallback((idx: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    const pageId = pages[idx].id;
+    const nav = sectionGrid
+      ? (sectionGrid.key === '__untagged__'
+        ? pages.flatMap((p, i) => (!p.isDeleted && !p.tag ? [i] : []))
+        : sectionGrid.key === '__deleted__'
+          ? pages.flatMap((p, i) => (p.isDeleted ? [i] : []))
+          : pages.flatMap((p, i) => (!p.isDeleted && p.tag === sectionGrid.key ? [i] : [])))
+      : pages.map((_, i) => i);
+
+    if (e.shiftKey && lastClickedIndex !== null) {
+      const a = nav.indexOf(lastClickedIndex);
+      const b = nav.indexOf(idx);
+      if (a >= 0 && b >= 0) {
+        const [min, max] = a < b ? [a, b] : [b, a];
+        setSelectedIds(prev => new Set([...prev, ...nav.slice(min, max + 1).map(i => pages[i].id)]));
+      }
+    } else if (e.metaKey || e.ctrlKey) {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        if (next.has(pageId)) next.delete(pageId);
+        else next.add(pageId);
+        return next;
+      });
+    } else {
+      setSelectedIds(new Set([pageId]));
+      setPrimaryIndex(idx);
+    }
+    setLastClickedIndex(idx);
+  }, [pages, lastClickedIndex, sectionGrid]);
+
+  const exitGridToPageView = useCallback((idx?: number) => {
+    if (sectionGrid) lastGridSectionRef.current = sectionGrid.key;
+    if (idx !== undefined) {
+      setPrimaryIndex(idx);
+      setLastClickedIndex(idx);
+      setSelectedIds(new Set([pages[idx].id]));
+    }
+    setSectionGrid(null);
+  }, [pages, sectionGrid]);
 
   // Tag selected pages, or the active page when nothing is selected
   // Actually assign the tag and auto-advance. (tagPages decides first whether
@@ -371,11 +503,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({
       if (next < updated.length) {
         setSelectedIds(new Set([updated[next].id]));
         setLastClickedIndex(next);
-        shouldScrollRef.current = true;
         setPrimaryIndex(next);
       } else {
-        setSelectedIds(new Set()); // nothing left to tag
+        setSelectedIds(new Set());
       }
+      // Stay on untagged grid — tagged pages disappear from the grid.
+      setSectionGrid({ key: '__untagged__', label: 'Untagged', entries: [] });
     }
   }, [pages, onSetPages]);
 
@@ -423,6 +556,34 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     if (selectedIds.size > 1 && selectedIds.has(page.id)) return selectedIds;
     return new Set([page.id]);
   }, [pages, selectedIds]);
+
+  const getContextMenuPageIds = useCallback((pageIdx: number): number[] => {
+    const targets = getContextMenuTargets(pageIdx);
+    return pages.filter(p => targets.has(p.id)).map(p => p.id);
+  }, [pages, getContextMenuTargets]);
+
+  const rotateTargets = useCallback((pageIdx: number, degrees: number) => {
+    const targets = getContextMenuTargets(pageIdx);
+    onSetPages(pages.map(p => (
+      targets.has(p.id) ? { ...p, rotation: (p.rotation + degrees + 360) % 360 } : p
+    )));
+  }, [pages, onSetPages, getContextMenuTargets]);
+
+  const toggleDeleteTargets = useCallback((pageIdx: number) => {
+    const targets = getContextMenuTargets(pageIdx);
+    const anyActive = pages.some(p => targets.has(p.id) && !p.isDeleted);
+    onSetPages(pages.map(p => (
+      targets.has(p.id) ? { ...p, isDeleted: anyActive } : p
+    )));
+  }, [pages, onSetPages, getContextMenuTargets]);
+
+  const toggleBlankTargets = useCallback((pageIdx: number) => {
+    const targets = getContextMenuTargets(pageIdx);
+    const anyBlank = pages.some(p => targets.has(p.id) && p.isBlank);
+    onSetPagesSilent(pages.map(p => (
+      targets.has(p.id) ? { ...p, isBlank: !anyBlank } : p
+    )));
+  }, [pages, onSetPagesSilent, getContextMenuTargets]);
 
   const toggleDelete = useCallback((pageId: number) => {
     onSetPages(pages.map(p => p.id === pageId ? { ...p, isDeleted: !p.isDeleted } : p));
@@ -475,13 +636,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   }, [presets, onSetPresets, tagPages]);
 
   const handleThumbContextMenu = useCallback((idx: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
     const page = pages[idx];
-    if (!page || page.isDeleted) return;
-    if (!selectedIds.has(page.id)) {
+    if (!page) return;
+    if (!page.isDeleted && !selectedIds.has(page.id)) {
       setSelectedIds(new Set([page.id]));
       setLastClickedIndex(idx);
     }
-    shouldScrollRef.current = true;
     setPrimaryIndex(idx);
     setContextMenu({ x: e.clientX, y: e.clientY, pageIdx: idx });
   }, [pages, selectedIds]);
@@ -521,6 +683,26 @@ export const Workspace: React.FC<WorkspaceProps> = ({
       setPrimaryIndex(newIdx);
     }
   };
+
+  const handleGridReorder = useCallback((
+    dragIds: Set<number>,
+    overPageId: number,
+    insertAfter: boolean,
+  ) => {
+    const picked = pages.filter(p => dragIds.has(p.id));
+    if (!picked.length) return;
+    const rest = pages.filter(p => !dragIds.has(p.id));
+    let insertAt = rest.findIndex(p => p.id === overPageId);
+    if (insertAt < 0) insertAt = rest.length;
+    else if (insertAfter) insertAt++;
+    const next = [...rest.slice(0, insertAt), ...picked, ...rest.slice(insertAt)];
+    onSetPages(next);
+    const focusId = pages[primaryIndex]?.id;
+    if (focusId != null) {
+      const newIdx = next.findIndex(p => p.id === focusId);
+      if (newIdx >= 0) setPrimaryIndex(newIdx);
+    }
+  }, [pages, onSetPages, primaryIndex]);
 
   // Which group a page belongs to in the grouped view.
   const pageGroupKey = (p: ProcessedPage): string =>
@@ -571,21 +753,32 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     if (newPrimary >= 0) setPrimaryIndex(newPrimary);
   };
 
-  // Clicking a section in the bottom pane: select its pages, make its first
-  // page active, and scroll both the preview and the thumbnail pane to it.
-  const jumpToSection = (entries: { page: ProcessedPage; idx: number }[]) => {
-    if (!entries.length) return;
-    setSelectedIds(new Set(entries.map(e => e.page.id)));
-    const first = entries[0];
-    setLastClickedIndex(first.idx);
-    shouldScrollRef.current = true;
-    setPrimaryIndex(first.idx);
-    requestAnimationFrame(() => {
-      const matches = topPaneRef.current?.querySelectorAll(`[data-thumb-id="${first.page.id}"]`);
-      const el = Array.from(matches ?? []).find(e => (e as HTMLElement).offsetParent !== null);
-      (el as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    });
+  // Clicking a section: show all its pages in a grid in the main preview.
+  const openSectionGrid = (
+    groupKey: string,
+    label: string,
+    entries: { page: ProcessedPage; idx: number }[],
+    forceOpen = false,
+  ) => {
+    if (!entries.length && groupKey !== '__untagged__') return;
+    if (!forceOpen && sectionGrid?.key === groupKey) {
+      exitGridToPageView(entries[0]?.idx);
+      return;
+    }
+    setSectionGrid({ key: groupKey, label, entries });
+    const focus = entries.find(e => e.idx === primaryIndex) ?? entries[0];
+    if (focus) {
+      setSelectedIds(new Set([focus.page.id]));
+      setLastClickedIndex(focus.idx);
+      setPrimaryIndex(focus.idx);
+    } else {
+      setSelectedIds(new Set());
+    }
+    setSplitIndex(null);
+    setActivePaneIsLeft(true);
   };
+
+  const exitSectionGrid = () => exitGridToPageView(primaryIndex);
 
   const startSectionRename = (tag: string) => {
     setRenamingSection(tag);
@@ -606,6 +799,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const taggedCount = pages.filter(p => !p.isDeleted && p.tag).length;
   const multiSelected = selectedIds.size > 1;
 
+  // Tags already on pages in this file — for the right-click “used in this file” list.
+  const usedInFileTags = useMemo(() => collectUsedTags(pages), [pages]);
+  const tagWords = useMemo(() => listWords(), [contextMenu, tagEditorMenu, pages]);
+
   // Sidebar grouped view — untagged → preset order → orphan tags → deleted
   const sidebarGroups = useMemo(() => {
     type Group = { key: string; tag?: string; entries: { page: ProcessedPage; idx: number }[] };
@@ -617,8 +814,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     });
 
     const result: Group[] = [];
-    if (byTag.has(null) && byTag.get(null)!.length)
-      result.push({ key: '__untagged__', entries: byTag.get(null)! });
+    const untaggedEntries = byTag.get(null) ?? [];
+    if (pages.some(p => !p.isDeleted)) {
+      result.push({ key: '__untagged__', entries: untaggedEntries });
+    } else if (untaggedEntries.length) {
+      result.push({ key: '__untagged__', entries: untaggedEntries });
+    }
 
     const placed = new Set<string>();
     presets.forEach(preset => {
@@ -642,6 +843,114 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     return result;
   }, [pages, presets]);
 
+  // Keep the grid in sync as pages move between sections.
+  const activeSectionGrid = useMemo(() => {
+    if (!sectionGrid) return null;
+    if (sectionGrid.key === '__untagged__') {
+      const entries = pages
+        .map((page, idx) => ({ page, idx }))
+        .filter(({ page }) => !page.isDeleted && !page.tag);
+      return { key: '__untagged__', label: 'Untagged', entries };
+    }
+    const group = sidebarGroups.find(g => g.key === sectionGrid.key);
+    if (!group?.entries.length) return null;
+    const isDeleted = group.key === '__deleted__';
+    const label = isDeleted ? 'Deleted' : group.tag!;
+    return { key: group.key, label, entries: group.entries };
+  }, [sectionGrid, sidebarGroups, pages]);
+
+  useEffect(() => {
+    if (!sectionGrid || sectionGrid.key === '__untagged__') return;
+    const group = sidebarGroups.find(g => g.key === sectionGrid.key);
+    if (!group?.entries.length) setSectionGrid(null);
+  }, [sectionGrid, sidebarGroups]);
+
+  const returnToGridView = () => {
+    const key = lastGridSectionRef.current;
+    if (key === '__untagged__') {
+      const entries = pages
+        .map((page, idx) => ({ page, idx }))
+        .filter(({ page }) => !page.isDeleted && !page.tag);
+      openSectionGrid('__untagged__', 'Untagged', entries, true);
+      return;
+    }
+    const group = sidebarGroups.find(g => g.key === key);
+    if (group) {
+      const label = group.key === '__untagged__' ? 'Untagged'
+        : group.key === '__deleted__' ? 'Deleted'
+        : group.tag!;
+      openSectionGrid(group.key, label, group.entries, true);
+      return;
+    }
+    const entries = pages
+      .map((page, idx) => ({ page, idx }))
+      .filter(({ page }) => !page.isDeleted && !page.tag);
+    openSectionGrid('__untagged__', 'Untagged', entries, true);
+  };
+
+  const openGridForPage = (page: ProcessedPage) => {
+    const key = page.isDeleted ? '__deleted__' : (page.tag ?? '__untagged__');
+    const group = sidebarGroups.find(g => g.key === key);
+    if (!group) return;
+    const label = group.key === '__untagged__' ? 'Untagged'
+      : group.key === '__deleted__' ? 'Deleted'
+      : group.tag!;
+    openSectionGrid(group.key, label, group.entries, true);
+  };
+
+  const mainView: MainViewMode = inGridMode ? 'grid' : isSplitView ? 'split' : 'page';
+
+  useEffect(() => {
+    if (!onChromeChange) return;
+    onChromeChange({
+      mainView,
+      sidebarView,
+      inGridMode,
+      canSplit: !inGridMode,
+      zoomIdx: activeZoomIdx,
+      zoomMax: ZOOM_STEPS.length - 1,
+      zoomLabel: activeZoomIdx === 0
+        ? (inGridMode ? 'Small' : 'Fit')
+        : `${Math.round(ZOOM_STEPS[activeZoomIdx] * 100)}%`,
+      setMainView: (mode: MainViewMode) => {
+        if (mode === 'grid') {
+          returnToGridView();
+          return;
+        }
+        if (mode === 'page') {
+          if (isSplitView) {
+            setSplitIndex(null);
+            setActivePaneIsLeft(true);
+            setRightZoomIdx(0);
+          }
+          if (sectionGrid) exitGridToPageView(primaryIndex);
+          return;
+        }
+        if (mode === 'split') {
+          if (sectionGrid) exitGridToPageView(primaryIndex);
+          if (!isSplitView) {
+            const next = primaryIndex + 1 < pages.length ? primaryIndex + 1 : Math.max(0, primaryIndex - 1);
+            setSplitIndex(next !== primaryIndex ? next : 0);
+            setActivePaneIsLeft(true);
+          }
+        }
+      },
+      setSidebarView,
+      setZoomIdx: (idx: number) => setActiveZoomIdx(() => idx),
+    });
+    return () => onChromeChange(null);
+  }, [
+    onChromeChange,
+    mainView,
+    sidebarView,
+    inGridMode,
+    isSplitView,
+    activeZoomIdx,
+    primaryIndex,
+    pages.length,
+    sectionGrid,
+  ]);
+
   if (loadingPdf) {
     return (
       <div className="loading-screen">
@@ -658,7 +967,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
       {/* ── Left Thumbnail Sidebar (resizable) ── */}
       <div className="sidebar-panel" style={{ width: sidebarWidth }}>
-      <aside className="sidebar">
+      <aside className={`sidebar${inGridMode ? ' grid-mode' : ''}`}>
         <div className="sidebar-header">
           <div className="sidebar-stats">
             <span className="sidebar-stat">
@@ -684,20 +993,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                   onClick={() => setSelectedIds(new Set())}>Clear</button>
               </>
             )}
-            {/* View toggle */}
-            <button
-              className={`btn-icon btn-sm${sidebarView === 'pages' ? ' active' : ''}`}
-              title="Page order view" onClick={() => setSidebarView('pages')}
-            ><List size={13} /></button>
-            <button
-              className={`btn-icon btn-sm${sidebarView === 'groups' ? ' active' : ''}`}
-              title="Grouped by tag — drag to reorder or move between tags" onClick={() => setSidebarView('groups')}
-            ><LayoutList size={13} /></button>
           </div>
         </div>
 
-        {/* Top pane — thumbnails (fixed ~50%, scrolls independently) */}
-        <div className="sidebar-top-pane" ref={topPaneRef}>
+        {/* Top pane — thumbnails hidden in grid mode */}
+        {!inGridMode && (
+          <div className="sidebar-top-pane" ref={topPaneRef}>
         {/* Sortable thumbnails — Pages view */}
         <div className="sidebar-scroll" style={{ display: sidebarView === 'pages' ? undefined : 'none' }}>
           <DndContext
@@ -744,9 +1045,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           >
           <div className="sidebar-scroll">
             {sidebarGroups.map(group => {
-              const collapsed = collapsedGroups.has(group.key);
               const isDeleted = group.key === '__deleted__';
               const isUntagged = group.key === '__untagged__';
+              const collapsed = isUntagged ? untaggedCollapsed : !expandedGroups.has(group.key);
               const tag = group.tag;
               const exportModified = tag ? isExportNameModified(tag, exportNames) : false;
               const exportLabel = tag ? getExportFileName(tag, exportNames) : '';
@@ -832,7 +1133,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           </div>
           </DndContext>
         )}
-        </div>{/* /sidebar-top-pane */}
+          </div>
+        )}
 
         {/* Bottom pane — section names (fixed ~50%, scrolls independently) so
             thumbnails above are never pushed out of view. */}
@@ -846,15 +1148,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             const isUntagged = group.key === '__untagged__';
             const tag = group.tag;
             const name = isUntagged ? 'Untagged' : isDeleted ? 'Deleted' : tag!;
-            const firstIdx = group.entries[0]?.idx;
-            const active = firstIdx != null && primaryIndex === firstIdx;
+            const active = sectionGrid?.key === group.key;
             const modified = tag ? isExportNameModified(tag, exportNames) : false;
             return (
               <div
                 key={group.key}
                 className={`sidebar-section-row${active ? ' active' : ''}${isDeleted ? ' deleted' : ''}${isUntagged ? ' untagged' : ''}`}
-                onClick={() => { if (renamingSection !== tag) jumpToSection(group.entries); }}
-                title="Jump to this section"
+                onClick={() => {
+                  if (renamingSection !== tag) {
+                    openSectionGrid(group.key, name, group.entries);
+                  }
+                }}
+                title="Show all pages in this section"
               >
                 {renamingSection === tag && tag ? (
                   <input
@@ -937,16 +1242,22 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
         {/* Toolbar */}
         <div className="preview-toolbar">
-          {/* Left: page info */}
           <div className="preview-page-info">
             <span className="preview-page-num">
-              {multiSelected
-                ? `${selectedIds.size} pages selected`
-                : `Page ${primaryIndex + 1} of ${pages.length}`}
+              {activeSectionGrid
+                ? `${activeSectionGrid.entries.length} pages in section`
+                : multiSelected
+                  ? `${selectedIds.size} pages selected`
+                  : `Page ${primaryIndex + 1} of ${pages.length}`}
             </span>
-            {!multiSelected && activePage && (
+            {!multiSelected && !activeSectionGrid && activePage && (
               activePage.tag ? (
-                <span className="preview-page-tag">
+                <button
+                  type="button"
+                  className="preview-page-tag preview-page-tag-btn"
+                  onClick={() => openGridForPage(activePage)}
+                  title="Show all pages in this section"
+                >
                   <span className="tag-label-text">{activePage.tag}</span>
                   {isExportNameModified(activePage.tag, exportNames) && (
                     <>
@@ -954,42 +1265,24 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                       <span className="export-name-text">{getExportFileName(activePage.tag, exportNames)}</span>
                     </>
                   )}
-                </span>
+                </button>
               ) : (
-                <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>untagged — right-click page to tag</span>
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>untagged — right-click for options</span>
               )
+            )}
+            {activeSectionGrid && (
+              <span className="preview-page-tag">
+                <span className="tag-label-text">{activeSectionGrid.label}</span>
+                {activeSectionGrid.key === '__untagged__' && (
+                  <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-tertiary)', fontWeight: 400 }}>
+                    · click to select · right-click for options
+                  </span>
+                )}
+              </span>
             )}
           </div>
 
-          {/* Center: zoom controls (always for the active pane) */}
-          <div className="zoom-controls">
-            <button
-              className="btn-icon"
-              title="Zoom out (Ctrl −)"
-              onClick={() => setActiveZoomIdx(i => Math.max(i - 1, 0))}
-              disabled={activeZoomIdx === 0}
-            >
-              <ZoomOut size={14} />
-            </button>
-            <button
-              className="zoom-label"
-              title="Reset to fit (Ctrl 0)"
-              onClick={() => setActiveZoomIdx(() => 0)}
-            >
-              {activeZoomIdx === 0 ? 'Fit' : `${Math.round(ZOOM_STEPS[activeZoomIdx] * 100)}%`}
-            </button>
-            <button
-              className="btn-icon"
-              title="Zoom in (Ctrl +)"
-              onClick={() => setActiveZoomIdx(i => Math.min(i + 1, ZOOM_STEPS.length - 1))}
-              disabled={activeZoomIdx === ZOOM_STEPS.length - 1}
-            >
-              <ZoomIn size={14} />
-            </button>
-          </div>
-
-          {/* Right: page actions + split toggle */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
             <button
               className="btn-icon"
               title="Undo (Ctrl+Z)"
@@ -1041,33 +1334,36 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             <div style={{ width: 1, height: 18, background: 'var(--separator)' }} />
             <button
               className="btn-icon"
+              title="Insert PDF page"
+              onClick={onInsertPdf}
+            >
+              <FilePlus size={15} />
+            </button>
+            <button
+              className="btn-icon"
               title="Scan cover with phone"
               onClick={onScanCover}
             >
               <Smartphone size={15} />
             </button>
-            <div className="tags-toolbar-wrap" ref={tagsPanelRef}>
+            <div className="tags-toolbar-wrap" ref={wordsPanelRef}>
               <button
-                className={`btn btn-sm btn-secondary${showTagsPanel ? ' tags-panel-open' : ''}`}
-                title="Manage tags — right-click a page to assign"
-                onClick={() => setShowTagsPanel(v => !v)}
+                className={`btn btn-sm btn-secondary${showWordsPanel ? ' tags-panel-open' : ''}`}
+                title="Manage autocomplete words for tagging"
+                onClick={() => setShowWordsPanel(v => !v)}
               >
-                <Tags size={13} />
-                Tags
+                <Type size={13} />
+                Words
               </button>
-              {showTagsPanel && (
+              {showWordsPanel && (
                 <div className="tags-panel-dropdown fade-in">
                   <div className="tags-panel-header">
-                    <span style={{ fontWeight: 600, fontSize: 13 }}>Saved tags</span>
-                    <button type="button" className="btn-icon btn-sm" onClick={() => setShowTagsPanel(false)}>
+                    <span style={{ fontWeight: 600, fontSize: 13 }}>Tag words</span>
+                    <button type="button" className="btn-icon btn-sm" onClick={() => setShowWordsPanel(false)}>
                       <X size={14} />
                     </button>
                   </div>
-                  <BasicTagsEditor
-                    presets={presets}
-                    onSetPresets={onSetPresets}
-                    onRename={handlePresetRename}
-                  />
+                  <WordListEditor />
                 </div>
               )}
             </div>
@@ -1079,56 +1375,57 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               <Trash2 size={13} />
               {activePage?.isDeleted ? 'Restore' : 'Delete'}
             </button>
-            <div style={{ width: 1, height: 20, background: 'var(--separator)', margin: '0 2px' }} />
-            <button
-              className={`btn btn-sm btn-secondary${isSplitView ? ' split-active' : ''}`}
-              title={isSplitView ? 'Close split view' : 'Open split view — click a second thumbnail to compare'}
-              onClick={() => {
-                if (isSplitView) {
-                  setSplitIndex(null);
-                  setActivePaneIsLeft(true);
-                  setRightZoomIdx(0);
-                } else {
-                  // Pick the adjacent page as a sensible default for the right pane
-                  const next = primaryIndex + 1 < pages.length ? primaryIndex + 1 : Math.max(0, primaryIndex - 1);
-                  setSplitIndex(next !== primaryIndex ? next : 0);
-                  setActivePaneIsLeft(true); // left pane active by default
-                }
-              }}
-              style={isSplitView ? { borderColor: 'var(--accent)', color: 'var(--accent)', background: 'var(--accent-light)' } : {}}
-            >
-              <Columns2 size={13} />
-              {isSplitView ? 'Close split' : 'Split view'}
-            </button>
           </div>
         </div>
 
         {/* Preview canvas zone — single or split */}
-        <div className={`preview-canvas-zone${isSplitView ? ' split' : ''}`}>
+        <div className={`preview-canvas-zone${isSplitView && !activeSectionGrid ? ' split' : ''}`}>
           {/* Primary pane */}
           <div
-            className={`preview-pane${isSplitView ? ' split-pane' : ''}${isSplitView && activePaneIsLeft ? ' pane-active' : ''}`}
-            onClick={() => isSplitView && setActivePaneIsLeft(true)}
+            className={`preview-pane${isSplitView && !activeSectionGrid ? ' split-pane' : ''}${isSplitView && activePaneIsLeft ? ' pane-active' : ''}${activeSectionGrid ? ' section-grid-pane' : ''}`}
+            onClick={() => isSplitView && !activeSectionGrid && setActivePaneIsLeft(true)}
           >
             {pages.some(p => !p.isDeleted) ? (
-              <ScrollablePreview
-                pdfDoc={pdfDoc}
-                pages={pages}
-                activeIndex={primaryIndex}
-                zoom={ZOOM_STEPS[leftZoomIdx]}
-                onActiveIndexChange={(idx) => {
-                  // Don't overwrite when user has deliberately selected a deleted page via thumbnail
-                  if (!pages[primaryIndex]?.isDeleted) setPrimaryIndex(idx);
-                }}
-                scrollToRef={scrollToPageRef}
-              />
+              activeSectionGrid ? (
+                <SectionGridPreview
+                  pdfDoc={pdfDoc}
+                  label={activeSectionGrid.label}
+                  entries={activeSectionGrid.entries}
+                  activeIndex={primaryIndex}
+                  selectedIds={selectedIds}
+                  zoom={ZOOM_STEPS[leftZoomIdx]}
+                  onPageClick={handleGridPageClick}
+                  onPageDoubleClick={(idx) => exitGridToPageView(idx)}
+                  onPageContextMenu={handleThumbContextMenu}
+                  onReorder={handleGridReorder}
+                  onClose={exitSectionGrid}
+                  emptyHint={
+                    activeSectionGrid.key === '__untagged__'
+                      ? 'All pages are tagged — pick a section below, or double-click a page in another section.'
+                      : undefined
+                  }
+                />
+              ) : activePage ? (
+                <LargePagePreview
+                  pdfDoc={pdfDoc}
+                  pageIndex={activePage.pageIndex}
+                  rotation={activePage.rotation}
+                  zoom={ZOOM_STEPS[leftZoomIdx]}
+                  onContextMenu={(e) => handleThumbContextMenu(primaryIndex, e)}
+                />
+              ) : (
+                <div className="empty-state">
+                  <Tag size={28} style={{ opacity: 0.25 }} />
+                  <span>No pages</span>
+                </div>
+              )
             ) : (
               <div className="empty-state">
                 <Tag size={28} style={{ opacity: 0.25 }} />
                 <span>No pages</span>
               </div>
             )}
-            {isSplitView && (
+            {isSplitView && !activeSectionGrid && (
               <div className="split-pane-label">
                 Page {primaryIndex + 1}
                 {activePage?.tag && (
@@ -1139,25 +1436,21 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           </div>
 
           {/* Split divider */}
-          {isSplitView && <div className="split-divider" />}
+          {isSplitView && !activeSectionGrid && <div className="split-divider" />}
 
           {/* Secondary pane */}
-          {isSplitView && (
+          {isSplitView && !activeSectionGrid && (
             <div
               className={`preview-pane split-pane${!activePaneIsLeft ? ' pane-active' : ''}`}
               style={{ position: 'relative' }}
               onClick={() => setActivePaneIsLeft(false)}
             >
-              {pages.some(p => !p.isDeleted) ? (
-                <ScrollablePreview
+              {splitPage ? (
+                <LargePagePreview
                   pdfDoc={pdfDoc}
-                  pages={pages}
-                  activeIndex={splitIndex ?? 0}
+                  pageIndex={splitPage.pageIndex}
+                  rotation={splitPage.rotation}
                   zoom={ZOOM_STEPS[rightZoomIdx]}
-                  onActiveIndexChange={(idx) => {
-                    if (splitIndex === null || !pages[splitIndex]?.isDeleted) setSplitIndex(idx);
-                  }}
-                  scrollToRef={scrollToSplitRef}
                 />
               ) : (
                 <div className="empty-state">
@@ -1197,6 +1490,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           </div>
 
           <div>
+            <div className="settings-section-title">Section shortcuts</div>
+            <BasicTagsEditor
+              presets={presets}
+              onSetPresets={onSetPresets}
+              onRename={handlePresetRename}
+            />
+          </div>
+
+          <div>
             <div className="settings-section-title">Output folder</div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6, wordBreak: 'break-all' }}>
               {outputDirectory || 'Not set — will prompt on export'}
@@ -1215,17 +1517,65 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         </div>
       )}
 
-      {/* Right-click tag menu */}
-      {contextMenu && (
+      {/* Right-click page menu */}
+      {contextMenu && (() => {
+        const page = pages[contextMenu.pageIdx];
+        if (!page) return null;
+        const targetIds = getContextMenuPageIds(contextMenu.pageIdx);
+        const targetPages = pages.filter(p => targetIds.includes(p.id));
+        const canCrop = targetPages.length === 1 && !targetPages[0].isDeleted;
+        const canReadjustCover = targetPages.length === 1 && !!targetPages[0].isCover;
+        const isBlank = targetPages.length > 0 && targetPages.every(p => p.isBlank);
+        return (
+          <PageContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            targetCount={targetIds.length}
+            words={tagWords}
+            usedInFile={usedInFileTags}
+            currentTag={page.tag}
+            isDeleted={page.isDeleted}
+            isBlank={isBlank}
+            canCrop={canCrop}
+            canReadjustCover={canReadjustCover}
+            onSelectTag={(tag) => commitTagFromPopup(tag, getContextMenuTargets(contextMenu.pageIdx))}
+            onWordSelect={(word) => {
+              const base = page.tag?.trim();
+              const next = base ? `${base} ${word}` : word;
+              setTagEditorMenu({
+                x: contextMenu.x,
+                y: contextMenu.y,
+                pageIdx: contextMenu.pageIdx,
+                initialValue: next,
+              });
+            }}
+            onOpenTagEditor={() => setTagEditorMenu({
+              x: contextMenu.x,
+              y: contextMenu.y,
+              pageIdx: contextMenu.pageIdx,
+            })}
+            onClearTag={() => tagPages(undefined, getContextMenuTargets(contextMenu.pageIdx))}
+            onRotate={(deg) => rotateTargets(contextMenu.pageIdx, deg)}
+            onCrop={() => { if (canCrop) onRequestCrop(targetPages[0].id); }}
+            onReadjustCover={() => { if (canReadjustCover) onReadjustCover(targetPages[0].id); }}
+            onToggleBlank={() => toggleBlankTargets(contextMenu.pageIdx)}
+            onToggleDelete={() => toggleDeleteTargets(contextMenu.pageIdx)}
+            onClose={() => setContextMenu(null)}
+          />
+        );
+      })()}
+
+      {tagEditorMenu && (
         <TagPopup
-          x={contextMenu.x}
-          y={contextMenu.y}
-          targetCount={getContextMenuTargets(contextMenu.pageIdx).size}
-          currentTag={pages[contextMenu.pageIdx]?.tag}
-          presets={presets}
-          onCommit={(tag) => { commitTagFromPopup(tag, getContextMenuTargets(contextMenu.pageIdx)); setContextMenu(null); }}
-          onClear={() => { tagPages(undefined, getContextMenuTargets(contextMenu.pageIdx)); setContextMenu(null); }}
-          onClose={() => setContextMenu(null)}
+          x={tagEditorMenu.x}
+          y={tagEditorMenu.y}
+          targetCount={getContextMenuTargets(tagEditorMenu.pageIdx).size}
+          currentTag={pages[tagEditorMenu.pageIdx]?.tag}
+          initialValue={tagEditorMenu.initialValue}
+          usedInFile={usedInFileTags}
+          onCommit={(tag) => { commitTagFromPopup(tag, getContextMenuTargets(tagEditorMenu.pageIdx)); setTagEditorMenu(null); }}
+          onClear={() => { tagPages(undefined, getContextMenuTargets(tagEditorMenu.pageIdx)); setTagEditorMenu(null); }}
+          onClose={() => setTagEditorMenu(null)}
         />
       )}
 

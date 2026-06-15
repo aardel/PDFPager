@@ -1,3 +1,5 @@
+import { SCAN_JPEG_QUALITY } from './scanQuality';
+
 export type ScanFilter = 'original' | 'enhance' | 'gray' | 'bw';
 
 export const SCAN_FILTER_LABELS: Record<ScanFilter, string> = {
@@ -6,6 +8,16 @@ export const SCAN_FILTER_LABELS: Record<ScanFilter, string> = {
   gray: 'Grayscale',
   bw: 'B&W',
 };
+
+function encodeJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) =>
+    canvas.toBlob(
+      b => (b ? resolve(b) : reject(new Error('Could not encode the image'))),
+      'image/jpeg',
+      SCAN_JPEG_QUALITY,
+    ),
+  );
+}
 
 function loadImage(bytes: ArrayBuffer, mime: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -72,6 +84,41 @@ function grayscale(d: Uint8ClampedArray) {
   }
 }
 
+/** Mild unsharp mask on luma — helps text after perspective warp. */
+function sharpen(d: Uint8ClampedArray, w: number, h: number, amount = 0.38) {
+  const n = w * h;
+  const luma = new Float32Array(n);
+  for (let i = 0, p = 0; p < n; i += 4, p++) {
+    luma[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  }
+  const blur = new Float32Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0, cnt = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          sum += luma[ny * w + nx]; cnt++;
+        }
+      }
+      blur[y * w + x] = sum / cnt;
+    }
+  }
+  for (let i = 0, p = 0; p < n; i += 4, p++) {
+    const delta = (luma[p] - blur[p]) * amount;
+    d[i] = Math.max(0, Math.min(255, d[i] + delta));
+    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + delta));
+    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + delta));
+  }
+}
+
+/** Auto white-balance + contrast + light sharpen — applied after straightening. */
+export function postProcessScannedImageData(data: Uint8ClampedArray, w: number, h: number) {
+  enhance(data);
+  sharpen(data, w, h);
+}
+
 /**
  * Bradley adaptive threshold: each pixel is compared against the mean of a
  * window around it (window = width/8), so text stays crisp even when the
@@ -123,13 +170,13 @@ export async function applyScanFilter(
   ctx.drawImage(img, 0, 0);
   const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-  if (filter === 'enhance') enhance(id.data);
-  else if (filter === 'gray') grayscale(id.data);
+  if (filter === 'enhance') {
+    enhance(id.data);
+    sharpen(id.data, canvas.width, canvas.height);
+  } else if (filter === 'gray') grayscale(id.data);
   else if (filter === 'bw') blackWhite(id.data, canvas.width, canvas.height);
 
   ctx.putImageData(id, 0, 0);
-  const blob: Blob = await new Promise((resolve, reject) =>
-    canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Could not encode the image'))), 'image/jpeg', 0.92)
-  );
+  const blob = await encodeJpeg(canvas);
   return { bytes: await blob.arrayBuffer(), mime: 'image/jpeg', blob };
 }

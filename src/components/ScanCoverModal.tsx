@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Smartphone, X, Check, Loader2, Move } from 'lucide-react';
-import { ScanFilter, SCAN_FILTER_LABELS, applyScanFilter } from '../utils/imageFilters';
+import { ScanFilter, SCAN_FILTER_LABELS, applyScanFilter, postProcessScannedImageData } from '../utils/imageFilters';
+import { SCAN_JPEG_QUALITY, SCAN_STRAIGHTEN_MAX_PX } from '../utils/scanQuality';
 
 /**
  * Pairs this desktop session with a phone for cover scanning.
@@ -73,7 +74,7 @@ function ensureScanWorker() {
   }
 }
 
-async function waitForScanWorker(maxMs = 8000): Promise<boolean> {
+async function waitForScanWorker(maxMs = 15000): Promise<boolean> {
   ensureScanWorker();
   const t0 = Date.now();
   while (!scanWorkerReady && !scanWorkerFailed && Date.now() - t0 < maxMs) {
@@ -109,6 +110,7 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
   const [target, setTarget] = useState<string | null>(null); // null = untagged
   const [insertedCount, setInsertedCount] = useState(0);
   const [adjustBusy, setAdjustBusy] = useState(false);
+  const [detectHint, setDetectHint] = useState('');
   const [filter, setFilter] = useState<ScanFilter>('original');
   const [filterBusy, setFilterBusy] = useState(false);
 
@@ -334,6 +336,7 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
         { x: w * 0.08, y: h * 0.92 },
       ];
       setPhase('adjust');
+      setDetectHint('');
       // Auto-detect asynchronously; refine the provisional corners on success.
       if (await waitForScanWorker()) {
         const k = Math.min(1, 800 / Math.max(w, h));
@@ -343,10 +346,20 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
         const sctx = small.getContext('2d', { willReadFrequently: true })!;
         sctx.drawImage(img, 0, 0, small.width, small.height);
         const image = sctx.getImageData(0, 0, small.width, small.height);
-        const res = await scanWorkerCall({ type: 'detect', image }, [image.data.buffer], 6000);
+        const res = await scanWorkerCall({ type: 'detect', image }, [image.data.buffer], 12000);
         if (res?.corners && phaseRef.current === 'adjust' && adjustImgRef.current === img) {
           cornersRef.current = res.corners.map((c: Pt) => ({ x: c.x / k, y: c.y / k }));
+          const conf = typeof res.confidence === 'number' ? res.confidence : 0;
+          if (conf < 0.65) {
+            setDetectHint('Auto-detect is uncertain — drag corners to the page edges.');
+          } else if (res.method === 'classical') {
+            setDetectHint('Edges detected with fallback mode — verify corners before straightening.');
+          } else {
+            setDetectHint('');
+          }
           drawAdjust();
+        } else if (phaseRef.current === 'adjust' && adjustImgRef.current === img) {
+          setDetectHint('Could not find the page — drag corners to the cover edges.');
         }
       }
     };
@@ -414,7 +427,7 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
       let outW = Math.round(Math.max(dist(cs[0], cs[1]), dist(cs[3], cs[2])));
       let outH = Math.round(Math.max(dist(cs[0], cs[3]), dist(cs[1], cs[2])));
       if (outW < 8 || outH < 8) throw new Error('Corners are too close together.');
-      const cap = 2400;
+      const cap = SCAN_STRAIGHTEN_MAX_PX;
       const k = Math.min(1, cap / Math.max(outW, outH));
       outW = Math.round(outW * k);
       outH = Math.round(outH * k);
@@ -432,9 +445,17 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
       const out = document.createElement('canvas');
       out.width = res.image.width;
       out.height = res.image.height;
-      out.getContext('2d')!.putImageData(res.image, 0, 0);
+      const octx = out.getContext('2d', { willReadFrequently: true })!;
+      octx.putImageData(res.image, 0, 0);
+      const processed = octx.getImageData(0, 0, out.width, out.height);
+      postProcessScannedImageData(processed.data, out.width, out.height);
+      octx.putImageData(processed, 0, 0);
       const blob: Blob = await new Promise((resolve, reject) =>
-        out.toBlob(b => (b ? resolve(b) : reject(new Error('Could not encode the result'))), 'image/jpeg', 0.92)
+        out.toBlob(
+          b => (b ? resolve(b) : reject(new Error('Could not encode the result'))),
+          'image/jpeg',
+          SCAN_JPEG_QUALITY,
+        )
       );
       const bytes = await blob.arrayBuffer();
       imageRef.current = { bytes, mime: 'image/jpeg' };
@@ -613,6 +634,11 @@ export const ScanCoverModal: React.FC<ScanCoverModalProps> = ({ tags, onInsert, 
               <div style={{ fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Move size={13} /> Drag the corners to the cover's edges, then straighten.
               </div>
+              {detectHint && (
+                <div style={{ fontSize: 12, color: 'var(--accent, #FF9500)', textAlign: 'center', padding: '0 8px' }}>
+                  {detectHint}
+                </div>
+              )}
               <canvas
                 ref={adjustCanvasRef}
                 style={{ borderRadius: 8, border: '1px solid var(--separator)', touchAction: 'none', cursor: 'crosshair' }}

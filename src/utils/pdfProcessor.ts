@@ -19,6 +19,8 @@ export interface ProcessedPage {
   rotation: number;    // Rotation in degrees (0, 90, 180, 270)
   isCover?: boolean;   // Phone-scanned cover appended to the buffer (not in the original file)
   coverId?: string;    // Key of the cover's image bytes in IndexedDB (persists across reloads)
+  isInserted?: boolean; // PDF page(s) appended from an external file (not in the original)
+  insertId?: string;   // Key of the source PDF bytes in IndexedDB (persists across reloads)
   crop?: CropRect;     // Optional rectangular crop, applied as a PDF CropBox
 }
 
@@ -90,6 +92,49 @@ export async function appendImagePage(
   // extra bytes if pdf-lib returns a view into a larger allocation.
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   return { buffer, pageIndex: doc.getPageCount() - 1 };
+}
+
+/** True for pages appended after the original file (covers or inserted PDFs). */
+export function isAppendedPage(p: ProcessedPage): boolean {
+  return !!(p.isCover || p.isInserted);
+}
+
+/**
+ * Appends every page from `insertBytes` at the END of `arrayBuffer` and
+ * returns the new buffer plus each appended page's index. Same append-at-end
+ * strategy as appendImagePage — array order controls export/preview position.
+ */
+export async function appendPdfPages(
+  arrayBuffer: ArrayBuffer,
+  insertBytes: ArrayBuffer
+): Promise<{ buffer: ArrayBuffer; pageIndices: number[] }> {
+  const doc = await PDFDocument.load(arrayBuffer.slice(0), { ignoreEncryption: true });
+  const src = await PDFDocument.load(insertBytes.slice(0), { ignoreEncryption: true });
+  const srcCount = src.getPageCount();
+  if (srcCount === 0) throw new Error('The PDF has no pages.');
+  const copied = await doc.copyPages(src, Array.from({ length: srcCount }, (_, i) => i));
+  const startIdx = doc.getPageCount();
+  for (const page of copied) doc.addPage(page);
+  const pageIndices = copied.map((_, i) => startIdx + i);
+  const bytes = await doc.save();
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return { buffer, pageIndices };
+}
+
+/**
+ * Normalizes a PDF for loading: re-saves it through pdf-lib (ignoring
+ * encryption), stripping encryption and rebuilding a clean structure so
+ * pdf.js can render documents that otherwise throw. Returns the original
+ * buffer unchanged if pdf-lib can't parse it.
+ */
+export async function normalizePdf(arrayBuffer: ArrayBuffer): Promise<ArrayBuffer> {
+  try {
+    const doc = await PDFDocument.load(arrayBuffer.slice(0), { ignoreEncryption: true });
+    const bytes = await doc.save();
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  } catch {
+    return arrayBuffer;
+  }
 }
 
 /**

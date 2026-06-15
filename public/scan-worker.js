@@ -1,20 +1,21 @@
 /* PDFPager scan worker.
  *
- * OpenCV's ~9MB WASM compile froze the UI thread for tens of seconds on
- * budget Androids (buttons visible but unresponsive). Everything OpenCV —
- * compile, contour detection, perspective warp — runs in this worker;
- * the page only ships small ImageData frames back and forth.
+ * Hybrid document detection: DocQuadNet-256 (ONNX) + classical OpenCV fallback.
+ * Perspective warp uses OpenCV WASM.
  *
  * Messages in:
  *   { type: 'detect',  id, image: ImageData }
  *   { type: 'flatten', id, image: ImageData, corners: [TL,TR,BR,BL], outW, outH }
  * Messages out:
  *   { type: 'ready' } | { type: 'error', message }
- *   { type: 'result', id, corners | image }
+ *   { type: 'result', id, corners, confidence, method, image }
  */
 'use strict';
 
-let scanner = null;
+const MODEL_SIZE = 256;
+let cvReady = false;
+let ortReady = false;
+let ortSession = null;
 
 try {
   importScripts('/vendor/opencv.js');
@@ -36,43 +37,112 @@ function whenCvReady(cb) {
   }
 }
 
-whenCvReady(() => {
+async function initOrt() {
   try {
-    importScripts('/vendor/jscanify.min.js');
-    scanner = new self.jscanify();
-    self.postMessage({ type: 'ready' });
+    importScripts('/docquad-postprocess.js', '/docdetect-classical.js');
   } catch (e) {
-    self.postMessage({ type: 'error', message: 'jscanify init: ' + e.message });
+    console.warn('Detection helpers failed to load:', e.message || e);
   }
-});
-
-// Contour detection → [TL,TR,BR,BL] or null. Rejects degenerate quads
-// (shoelace area < 8% of the frame).
-function detect(image) {
-  let img = null, contour = null;
   try {
-    img = cv.matFromImageData(image);
-    contour = scanner.findPaperContour(img);
-    if (!contour) return null;
-    const p = scanner.getCornerPoints(contour);
-    if (!p || !p.topLeftCorner || !p.topRightCorner || !p.bottomRightCorner || !p.bottomLeftCorner) return null;
-    const quad = [p.topLeftCorner, p.topRightCorner, p.bottomRightCorner, p.bottomLeftCorner];
-    let area = 0;
-    for (let i = 0; i < 4; i++) {
-      const a = quad[i], b = quad[(i + 1) % 4];
-      area += a.x * b.y - b.x * a.y;
-    }
-    if (Math.abs(area) / 2 < image.width * image.height * 0.08) return null;
-    return quad.map(c => ({ x: c.x, y: c.y }));
-  } catch {
-    return null;
-  } finally {
-    if (img) img.delete();
-    if (contour) contour.delete();
+    importScripts('/vendor/ort/ort.wasm.min.js');
+    ort.env.wasm.wasmPaths = '/vendor/ort/';
+    ort.env.wasm.numThreads = 1;
+    ortSession = await ort.InferenceSession.create('/vendor/docquadnet256.onnx', {
+      executionProviders: ['wasm'],
+    });
+    ortReady = true;
+  } catch (e) {
+    ortSession = null;
+    ortReady = false;
+    console.warn('DocQuadNet ONNX unavailable:', e.message || e);
   }
 }
 
-// True homography flatten → ImageData(outW × outH) or null.
+whenCvReady(() => {
+  cvReady = true;
+  initOrt().finally(() => {
+    self.postMessage({ type: 'ready', ort: ortReady });
+  });
+});
+
+function validateQuad(corners, image) {
+  if (!corners || corners.length !== 4) return false;
+  const pts = corners.map(c => [c.x, c.y]);
+  const DQ = self.DocQuadPostprocess;
+  if (!DQ) return false;
+  const area = DQ.shoelaceArea(pts);
+  if (area < image.width * image.height * 0.08) return false;
+  if (!DQ.isConvexQuad(pts) || DQ.isSelfIntersectingQuad(pts)) return false;
+  return corners.every(c => Number.isFinite(c.x) && Number.isFinite(c.y));
+}
+
+async function detectDocQuad(image) {
+  if (!ortSession || !self.DocQuadPostprocess) return null;
+  const DQ = self.DocQuadPostprocess;
+  const lb = DQ.Letterbox.create(image.width, image.height, MODEL_SIZE, MODEL_SIZE);
+  const inputData = DQ.imageDataToTensor(image, lb, MODEL_SIZE, MODEL_SIZE);
+  const inputName = ortSession.inputNames[0];
+  const inputTensor = new ort.Tensor('float32', inputData, [1, 3, MODEL_SIZE, MODEL_SIZE]);
+  const outputs = await ortSession.run({ [inputName]: inputTensor });
+
+  const cornerTensor = outputs[ortSession.outputNames[0]];
+  const maskTensor = outputs[ortSession.outputNames[1]];
+  const cornerChannels = [];
+  const plane = MODEL_SIZE * MODEL_SIZE / 16; // 64*64
+  for (let c = 0; c < 4; c++) {
+    cornerChannels.push(cornerTensor.data.subarray(c * plane, (c + 1) * plane));
+  }
+
+  const post = DQ.applyProductPostprocessing(cornerChannels, maskTensor.data, lb);
+  const corners = post.cornersOriginal.map(([x, y]) => ({ x, y }));
+  return {
+    corners,
+    confidence: DQ.penaltyToConfidence(post.penaltyCorners),
+    method: 'docquad',
+    source: post.chosenSource,
+    penalty: post.penaltyCorners,
+  };
+}
+
+function detectClassical(image) {
+  if (!self.DocDetectClassical) return null;
+  const corners = self.DocDetectClassical.detect(cv, image);
+  if (!corners) return null;
+  return {
+    corners,
+    confidence: self.DocDetectClassical.classicalConfidence(corners, image.width, image.height),
+    method: 'classical',
+  };
+}
+
+async function detect(image) {
+  let ml = null;
+  let classical = null;
+
+  if (ortReady) {
+    try { ml = await detectDocQuad(image); } catch { ml = null; }
+  }
+  if (cvReady) {
+    try { classical = detectClassical(image); } catch { classical = null; }
+  }
+
+  const candidates = [];
+  if (ml?.corners && validateQuad(ml.corners, image)) candidates.push(ml);
+  if (classical?.corners && validateQuad(classical.corners, image)) candidates.push(classical);
+
+  if (!candidates.length) {
+    return { corners: null, confidence: 0, method: 'none' };
+  }
+
+  candidates.sort((a, b) => b.confidence - a.confidence);
+  const best = candidates[0];
+  return {
+    corners: best.corners,
+    confidence: best.confidence,
+    method: best.method,
+  };
+}
+
 function flatten(image, corners, outW, outH) {
   let src = null, dst = null, srcTri = null, dstTri = null, M = null;
   try {
@@ -91,14 +161,21 @@ function flatten(image, corners, outW, outH) {
   }
 }
 
-self.onmessage = (e) => {
+self.onmessage = async (e) => {
   const m = e.data;
-  if (!scanner) {
-    self.postMessage({ type: 'result', id: m.id, corners: null, image: null });
+  if (!cvReady) {
+    self.postMessage({ type: 'result', id: m.id, corners: null, image: null, confidence: 0, method: 'none' });
     return;
   }
   if (m.type === 'detect') {
-    self.postMessage({ type: 'result', id: m.id, corners: detect(m.image) });
+    const result = await detect(m.image);
+    self.postMessage({
+      type: 'result',
+      id: m.id,
+      corners: result.corners,
+      confidence: result.confidence,
+      method: result.method,
+    });
   } else if (m.type === 'flatten') {
     const out = flatten(m.image, m.corners, m.outW, m.outH);
     if (out) {

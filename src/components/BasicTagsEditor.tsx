@@ -85,13 +85,13 @@ export const BasicTagsEditor: React.FC<BasicTagsEditorProps> = ({ presets, onSet
   return (
     <div className="basic-tags-editor">
       <p className="basic-tags-hint">
-        Plain tag names for grouping pages. Assign via right-click on a page.
-        Keys <kbd>1</kbd>–<kbd>9</kbd> match list order.
+        Export section names for quick assign — chips on right-click and keys <kbd>1</kbd>–<kbd>9</kbd>.
+        Type tags freely from words when tagging; these are shortcuts only.
       </p>
 
       <div className="basic-tags-list">
         {presets.length === 0 && (
-          <p className="basic-tags-empty">No tags yet. Add one below.</p>
+          <p className="basic-tags-empty">No sections yet. Add one below.</p>
         )}
         {presets.map((preset, idx) => (
           <div key={`${preset}-${idx}`} className="basic-tags-row">
@@ -138,7 +138,7 @@ export const BasicTagsEditor: React.FC<BasicTagsEditorProps> = ({ presets, onSet
           type="text"
           value={newTag}
           onChange={e => setNewTag(e.target.value)}
-          placeholder="New tag name…"
+          placeholder="New section name…"
           style={{ flex: 1, fontSize: 12 }}
         />
         <button type="submit" className="btn btn-primary btn-sm">
