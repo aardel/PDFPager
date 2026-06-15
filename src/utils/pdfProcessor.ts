@@ -110,6 +110,10 @@ export async function appendPdfPages(
 ): Promise<{ buffer: ArrayBuffer; pageIndices: number[] }> {
   const doc = await PDFDocument.load(arrayBuffer.slice(0), { ignoreEncryption: true });
   const src = await PDFDocument.load(insertBytes.slice(0), { ignoreEncryption: true });
+  // pdf-lib can't decrypt, so re-saving an encrypted doc here yields unreadable
+  // pages. Refuse with a clear message rather than silently corrupting.
+  if (doc.isEncrypted) throw new Error('This document is encrypted — re-save it without a password before inserting pages.');
+  if (src.isEncrypted) throw new Error('The PDF you are inserting is encrypted — re-save it without a password first.');
   const srcCount = src.getPageCount();
   if (srcCount === 0) throw new Error('The PDF has no pages.');
   const copied = await doc.copyPages(src, Array.from({ length: srcCount }, (_, i) => i));

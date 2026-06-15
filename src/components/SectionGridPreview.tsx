@@ -134,7 +134,8 @@ const GridCell: React.FC<GridCellProps> = ({
           // stays reasonably crisp when zoomed in, without re-rendering.
           const renderScale = thumbRenderScale(420 / native.width);
           const vp = p.getViewport({ scale: renderScale, rotation: rot });
-          const canvas = canvasRef.current!;
+          const canvas = canvasRef.current;
+          if (!canvas || !active) return;
           canvas.width = vp.width;
           canvas.height = vp.height;
           const ctx = canvas.getContext('2d');
