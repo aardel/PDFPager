@@ -23,13 +23,25 @@ export function runThumbRender<T>(fn: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const exec = async () => {
       running++;
+      // A render that hangs (heavy/encrypted page) must not hold its slot
+      // forever — both the sidebar and grid share this queue, so a few stuck
+      // renders would otherwise freeze all thumbnails. Free the slot after a
+      // timeout; freeing is idempotent so a late settle doesn't double-count.
+      let freed = false;
+      const free = () => {
+        if (freed) return;
+        freed = true;
+        running--;
+        pumpQueue();
+      };
+      const timer = setTimeout(free, 10000);
       try {
         resolve(await fn());
       } catch (err) {
         reject(err);
       } finally {
-        running--;
-        pumpQueue();
+        clearTimeout(timer);
+        free();
       }
     };
     if (running < MAX_CONCURRENT) exec();
