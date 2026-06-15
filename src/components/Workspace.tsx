@@ -347,16 +347,24 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     );
     if (!targets.size) return;
 
-    onSetPages(pages.map(p => targets.has(p.id) ? { ...p, tag } : p));
+    const updated = pages.map(p => targets.has(p.id) ? { ...p, tag } : p);
+    onSetPages(updated);
 
-    // Auto-advance after tagging a single page
-    if (targets.size === 1) {
-      const taggedIdx = pages.findIndex(p => p.id === [...targets][0]);
-      let next = taggedIdx + 1;
-      while (next < pages.length && pages[next].isDeleted) next++;
-      if (next < pages.length) {
+    // After assigning a tag, jump to the next still-untagged page (past the
+    // last one we just tagged), select + highlight it, and scroll to it — so
+    // tagging a run of pages flows without manual navigation. Skipped when
+    // clearing a tag.
+    if (tag) {
+      const lastTaggedIdx = updated.reduce((m, p, i) => (targets.has(p.id) ? i : m), -1);
+      let next = lastTaggedIdx + 1;
+      while (next < updated.length && (updated[next].isDeleted || updated[next].tag)) next++;
+      if (next < updated.length) {
+        setSelectedIds(new Set([updated[next].id]));
+        setLastClickedIndex(next);
         shouldScrollRef.current = true;
         setPrimaryIndex(next);
+      } else {
+        setSelectedIds(new Set()); // nothing left to tag
       }
     }
   }, [pages, primaryIndex, selectedIds, onSetPages]);

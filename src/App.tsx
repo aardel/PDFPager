@@ -4,7 +4,7 @@ import { Workspace } from './components/Workspace';
 import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, bakeCrops, cropSignature, ProcessedPage, CropRect, ExportCancelled } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
 import { CropModal } from './components/CropModal';
-import { filterBasicPresets, getExportFileName } from './utils/tagUtils';
+import { filterBasicPresets, getExportFileName, sanitizeExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
 import { saveCoverImage, loadCoverImage, loadCoverRaw, pruneCoverImages } from './utils/coverStore';
 import {
@@ -12,6 +12,7 @@ import {
   hasOutputDirectory,
   pickOutputDirectory,
   writeFilesToDirectory,
+  getOutputDirectoryName,
 } from './utils/fileSystem';
 import { FileText, X, Plus, LogOut } from 'lucide-react';
 import { useAuth } from './components/AuthGate';
@@ -53,6 +54,11 @@ const SEED_TAGS = [
   'CASE REVIEW + ID CARDS',
 ];
 const SEED_VERSION = '2026-06-13-casefiles';
+
+// The full cleaned master saved into ORG SCAN omits this section.
+const MASTER_EXCLUDE_TAG = 'MINUTES';
+// Subfolder (next to the split files) holding the cleaned master.
+const ORG_SCAN_FOLDER = 'ORG SCAN';
 
 // Case-insensitive dedupe, preserving first occurrence and order.
 function dedupeTags(tags: string[]): string[] {
@@ -501,17 +507,42 @@ export default function App() {
         return;
       }
 
-      // Full exports also archive the cleaned original: one complete PDF
-      // (covers included, deleted pages removed, rotations applied) in an
-      // "org scan" subfolder next to the split files.
-      if (!targetTag && pdfFile) {
+      // Resolve the destination folder up front — the full export's master is
+      // named after it. Returns null if the user cancelled the picker; '' if
+      // there's no real folder (download fallback → master keeps source name).
+      let electronDir = '';
+      let folderName = (pdfFile?.name.replace(/\.pdf$/i, '')) || 'document';
+      if (window.electronAPI) {
+        electronDir = outputDirectory;
+        if (!electronDir) {
+          const selected = await window.electronAPI.selectDirectory();
+          if (!selected) { setIsExporting(false); setExportProgress(''); return; }
+          electronDir = selected;
+          handleSetOutputDirectory(selected);
+        }
+        folderName = electronDir.split(/[\\/]/).filter(Boolean).pop() || folderName;
+      } else if (supportsFileSystemAccess()) {
+        if (!hasOutputDirectory()) {
+          const name = await pickOutputDirectory();
+          if (!name) { setIsExporting(false); setExportProgress(''); return; }
+          handleSetOutputDirectory(name);
+        }
+        folderName = getOutputDirectoryName() || folderName;
+      }
+
+      // Full exports also archive a cleaned master: one complete PDF (covers
+      // included, deleted pages removed, rotations applied) in ORG SCAN,
+      // named after the chosen folder and excluding the MINUTES section.
+      if (!targetTag) {
         if (shouldCancel()) throw new ExportCancelled();
-        setExportProgress('Building the cleaned original (org scan)…');
-        const cleaned = await buildCleanedDocument(pdfBuffer, pages);
+        setExportProgress('Building the cleaned master (ORG SCAN)…');
+        const masterPages = pages.filter(
+          p => (p.tag ?? '').toLowerCase() !== MASTER_EXCLUDE_TAG.toLowerCase()
+        );
+        const cleaned = await buildCleanedDocument(pdfBuffer, masterPages);
         if (cleaned) {
-          const baseName = pdfFile.name.replace(/\.pdf$/i, '') || 'document';
           processedFiles.push({
-            fileName: `org scan/${baseName}.pdf`,
+            fileName: `${ORG_SCAN_FOLDER}/${sanitizeExportFileName(folderName)}.pdf`,
             data: cleaned,
           });
         }
@@ -521,15 +552,7 @@ export default function App() {
       setExportProgress(`Saving ${processedFiles.length} file(s)…`);
 
       if (window.electronAPI) {
-        // Desktop (Electron): native folder picker + write via IPC.
-        let targetDir = outputDirectory;
-        if (!targetDir) {
-          const selected = await window.electronAPI.selectDirectory();
-          if (!selected) { setIsExporting(false); setExportProgress(''); return; }
-          targetDir = selected;
-          handleSetOutputDirectory(selected);
-        }
-        const result = await window.electronAPI.savePDFs(targetDir, processedFiles);
+        const result = await window.electronAPI.savePDFs(electronDir, processedFiles);
         if (result.success) {
           setExportProgress('Done!');
           setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
@@ -537,12 +560,6 @@ export default function App() {
           throw new Error(result.error || 'Failed to write files');
         }
       } else if (supportsFileSystemAccess()) {
-        // Browser (Chrome/Edge): write straight into a user-chosen folder.
-        if (!hasOutputDirectory()) {
-          const name = await pickOutputDirectory();
-          if (!name) { setIsExporting(false); setExportProgress(''); return; }
-          handleSetOutputDirectory(name);
-        }
         await writeFilesToDirectory(processedFiles, (done, total, name) => {
           if (exportCancelRef.current) throw new ExportCancelled();
           setExportProgress(`Writing ${name} (${done + 1}/${total})…`);
