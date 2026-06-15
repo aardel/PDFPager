@@ -19,7 +19,8 @@ import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import { PageThumbnail } from './PageThumbnail';
 import { ScrollablePreview } from './ScrollablePreview';
 import { BasicTagsEditor } from './BasicTagsEditor';
-import { PageContextMenu } from './PageContextMenu';
+import { TagPopup } from './TagPopup';
+import { recordTagWords, seedWords } from '../utils/wordStore';
 import { ProcessedPage, loadPdfDocument } from '../utils/pdfProcessor';
 import { supportsFileSystemAccess, pickOutputDirectory } from '../utils/fileSystem';
 import {
@@ -172,6 +173,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   }, [splitIndex]);
 
   // Sidebar view: 'pages' = flat ordered list, 'groups' = grouped by tag
+  // Seed the autocomplete word store from the tag presets so suggestions
+  // work from the first use.
+  useEffect(() => { seedWords(presets); }, [presets]);
+
   const [sidebarView, setSidebarView] = useState<'pages' | 'groups'>('groups');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const toggleGroup = (key: string) =>
@@ -353,6 +358,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
     const updated = pages.map(p => targets.has(p.id) ? { ...p, tag } : p);
     onSetPages(updated);
+    recordTagWords(tag); // learn the words for autocomplete
 
     // After assigning a tag, jump to the next still-untagged page (past the
     // last one we just tagged), select + highlight it, and scroll to it — so
@@ -457,19 +463,16 @@ export const Workspace: React.FC<WorkspaceProps> = ({
     })());
   }, [pages, exportNames, onSetPages, onSetExportNames]);
 
-  const createAndAssignTag = useCallback((name: string, assignToPageIdx: number) => {
-    const clean = name.trim();
+  // Commit a tag from the popup: remember it as a preset (new tags persist),
+  // then assign it (which may raise the merge/new conflict prompt).
+  const commitTagFromPopup = useCallback((tag: string, targets: Set<number>) => {
+    const clean = tag.trim();
     if (!clean) return;
     if (!presets.some(p => p.toLowerCase() === clean.toLowerCase())) {
       onSetPresets([...presets, clean]);
     }
-    const page = pages[assignToPageIdx];
-    if (!page || page.isDeleted) return;
-    const targets = selectedIds.size > 1 && selectedIds.has(page.id)
-      ? selectedIds
-      : new Set([page.id]);
     tagPages(clean, targets);
-  }, [presets, pages, selectedIds, onSetPresets, tagPages]);
+  }, [presets, onSetPresets, tagPages]);
 
   const handleThumbContextMenu = useCallback((idx: number, e: React.MouseEvent) => {
     const page = pages[idx];
@@ -1214,18 +1217,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
 
       {/* Right-click tag menu */}
       {contextMenu && (
-        <PageContextMenu
+        <TagPopup
           x={contextMenu.x}
           y={contextMenu.y}
-          presets={presets}
-          hasTag={(() => {
-            const targets = selectedIds.size > 1 ? selectedIds : new Set([pages[contextMenu.pageIdx]?.id]);
-            return [...targets].some(id => !!pages.find(pg => pg.id === id)?.tag);
-          })()}
+          targetCount={getContextMenuTargets(contextMenu.pageIdx).size}
           currentTag={pages[contextMenu.pageIdx]?.tag}
-          onSelectTag={(tag) => tagPages(tag, getContextMenuTargets(contextMenu.pageIdx))}
-          onNewTag={(name) => createAndAssignTag(name, contextMenu.pageIdx)}
-          onClearTag={() => tagPages(undefined, getContextMenuTargets(contextMenu.pageIdx))}
+          presets={presets}
+          onCommit={(tag) => { commitTagFromPopup(tag, getContextMenuTargets(contextMenu.pageIdx)); setContextMenu(null); }}
+          onClear={() => { tagPages(undefined, getContextMenuTargets(contextMenu.pageIdx)); setContextMenu(null); }}
           onClose={() => setContextMenu(null)}
         />
       )}
