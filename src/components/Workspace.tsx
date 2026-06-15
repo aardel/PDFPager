@@ -50,6 +50,7 @@ import {
   Undo2,
   Redo2,
   Smartphone,
+  Pencil,
 } from 'lucide-react';
 
 interface WorkspaceProps {
@@ -226,6 +227,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   // Inline export-name edit in group header (keyed by tag string)
   const [editingExportTag, setEditingExportTag] = useState<string | null>(null);
   const [exportEditValue, setExportEditValue] = useState('');
+  // Inline rename of a section (the tag itself) in the bottom sections pane.
+  const [renamingSection, setRenamingSection] = useState<string | null>(null);
+  const [renameSectionValue, setRenameSectionValue] = useState('');
+  // Re-tag conflict prompt: tagging pages with a tag already used elsewhere.
+  const [tagConflict, setTagConflict] = useState<{ tag: string; targets: Set<number> } | null>(null);
 
   // Close tags panel on outside click
   useEffect(() => {
@@ -340,12 +346,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   }, [pages, lastClickedIndex, isSplitView, activePaneIsLeft]);
 
   // Tag selected pages, or the active page when nothing is selected
-  const tagPages = useCallback((tag: string | undefined, overrideTargets?: Set<number>) => {
-    const targets = overrideTargets ?? (
-      selectedIds.size > 0
-        ? selectedIds
-        : new Set(pages[primaryIndex] ? [pages[primaryIndex].id] : [])
-    );
+  // Actually assign the tag and auto-advance. (tagPages decides first whether
+  // to ask about a re-tag conflict.)
+  const applyTag = useCallback((tag: string | undefined, targets: Set<number>) => {
     if (!targets.size) return;
 
     const updated = pages.map(p => targets.has(p.id) ? { ...p, tag } : p);
@@ -368,7 +371,45 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         setSelectedIds(new Set()); // nothing left to tag
       }
     }
-  }, [pages, primaryIndex, selectedIds, onSetPages]);
+  }, [pages, onSetPages]);
+
+  // Tag selected pages, or the active page when nothing is selected. If the
+  // tag already exists on other, non-adjacent pages, ask whether to merge into
+  // that section or split off a new one (so a re-used tag isn't silently
+  // lumped into one export file).
+  const tagPages = useCallback((tag: string | undefined, overrideTargets?: Set<number>) => {
+    const targets = overrideTargets ?? (
+      selectedIds.size > 0
+        ? selectedIds
+        : new Set(pages[primaryIndex] ? [pages[primaryIndex].id] : [])
+    );
+    if (!targets.size) return;
+
+    if (tag) {
+      const existingIdx = new Set(
+        pages.map((p, i) => (p.tag?.toLowerCase() === tag.toLowerCase() && !targets.has(p.id)) ? i : -1)
+          .filter(i => i >= 0)
+      );
+      if (existingIdx.size) {
+        const targetIdx = pages.map((p, i) => targets.has(p.id) ? i : -1).filter(i => i >= 0);
+        const adjacent = targetIdx.some(i => existingIdx.has(i - 1) || existingIdx.has(i + 1));
+        if (!adjacent) { setTagConflict({ tag, targets }); return; }
+      }
+    }
+    applyTag(tag, targets);
+  }, [pages, primaryIndex, selectedIds, applyTag]);
+
+  // Build a distinct variant like "MINUTES (2)" not already used as a tag/preset.
+  const nextTagVariant = useCallback((base: string): string => {
+    const taken = (t: string) =>
+      presets.some(p => p.toLowerCase() === t.toLowerCase()) ||
+      pages.some(p => p.tag?.toLowerCase() === t.toLowerCase());
+    for (let n = 2; n < 1000; n++) {
+      const cand = `${base} (${n})`;
+      if (!taken(cand)) return cand;
+    }
+    return `${base} (${Date.now()})`;
+  }, [presets, pages]);
 
   const getContextMenuTargets = useCallback((pageIdx: number): Set<number> => {
     const page = pages[pageIdx];
@@ -541,6 +582,16 @@ export const Workspace: React.FC<WorkspaceProps> = ({
       const el = Array.from(matches ?? []).find(e => (e as HTMLElement).offsetParent !== null);
       (el as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     });
+  };
+
+  const startSectionRename = (tag: string) => {
+    setRenamingSection(tag);
+    setRenameSectionValue(tag);
+  };
+  const commitSectionRename = (oldTag: string) => {
+    const v = renameSectionValue.trim();
+    if (v && v !== oldTag) handlePresetRename(oldTag, v);
+    setRenamingSection(null);
   };
 
   // Stats
@@ -799,13 +850,38 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               <div
                 key={group.key}
                 className={`sidebar-section-row${active ? ' active' : ''}${isDeleted ? ' deleted' : ''}${isUntagged ? ' untagged' : ''}`}
-                onClick={() => jumpToSection(group.entries)}
+                onClick={() => { if (renamingSection !== tag) jumpToSection(group.entries); }}
                 title="Jump to this section"
               >
-                <span className="sidebar-section-name tag-label-text">
-                  {name}{modified && tag ? ` → ${getExportFileName(tag, exportNames)}` : ''}
-                </span>
+                {renamingSection === tag && tag ? (
+                  <input
+                    type="text"
+                    className="sidebar-section-rename-input tag-label-text"
+                    value={renameSectionValue}
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setRenameSectionValue(e.target.value)}
+                    onBlur={() => commitSectionRename(tag)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitSectionRename(tag);
+                      if (e.key === 'Escape') setRenamingSection(null);
+                    }}
+                  />
+                ) : (
+                  <span className="sidebar-section-name tag-label-text">
+                    {name}{modified && tag ? ` → ${getExportFileName(tag, exportNames)}` : ''}
+                  </span>
+                )}
                 <span className="sidebar-section-count">{group.entries.length}p</span>
+                {!isDeleted && !isUntagged && tag && renamingSection !== tag && (
+                  <button
+                    className="btn-icon btn-sm"
+                    title="Rename section"
+                    onClick={(e) => { e.stopPropagation(); startSectionRename(tag); }}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                )}
                 {!isDeleted && !isUntagged && (
                   <button
                     className="btn btn-secondary btn-sm"
@@ -1152,6 +1228,48 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           onClearTag={() => tagPages(undefined, getContextMenuTargets(contextMenu.pageIdx))}
           onClose={() => setContextMenu(null)}
         />
+      )}
+
+      {/* Re-tag conflict prompt */}
+      {tagConflict && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setTagConflict(null)}
+        >
+          <div
+            style={{ background: 'var(--bg-card)', borderRadius: 14, width: 'min(420px, 92vw)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <b style={{ fontSize: 15 }}>“{tagConflict.tag}” is already used</b>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.5 }}>
+                Some other pages are already tagged <b>{tagConflict.tag}</b>. Merge these {tagConflict.targets.size} page(s) into that section (one export file), or keep them separate as a new section?
+              </p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => { applyTag(tagConflict.tag, tagConflict.targets); setTagConflict(null); }}
+              >
+                Merge into “{tagConflict.tag}”
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  const newTag = nextTagVariant(tagConflict.tag);
+                  if (!presets.some(p => p.toLowerCase() === newTag.toLowerCase())) onSetPresets([...presets, newTag]);
+                  applyTag(newTag, tagConflict.targets);
+                  setTagConflict(null);
+                }}
+              >
+                Create new section “{nextTagVariant(tagConflict.tag)}”
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setTagConflict(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Export progress toast */}

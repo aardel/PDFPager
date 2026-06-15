@@ -132,13 +132,12 @@ export const PageThumbnail: React.FC<PageThumbnailProps> = ({
         {isDeleted && <div className="thumb-deleted-line" />}
       </div>
 
-      {/* Meta */}
-      <div className="thumb-meta">
-        <span className="thumb-num">Page {pageIndex + 1}</span>
-        {tag && !isDeleted && (
+      {/* Meta — tag pill only (page number intentionally hidden) */}
+      {tag && !isDeleted && (
+        <div className="thumb-meta">
           <span className="thumb-tag-pill tag-label-text">{tag}</span>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Delete / restore button */}
       <button

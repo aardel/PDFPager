@@ -473,6 +473,18 @@ input[type="text"]:focus {
   color: var(--text-tertiary);
   padding: 6px 8px;
 }
+.sidebar-section-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  outline: none;
+}
 
 .thumbnail-strip {
   display: flex;
@@ -504,8 +516,8 @@ input[type="text"]:focus {
 .thumb-card.deleted .thumb-canvas-wrap { border-color: var(--danger); }
 
 .thumb-canvas-wrap {
-  width: 52px;
-  height: 74px; /* A4 ratio ~0.707 */
+  width: 68px;
+  height: 96px; /* A4 ratio ~0.707 */
   flex-shrink: 0;
   border-radius: 3px;
   border: 1px solid var(--separator);
