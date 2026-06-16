@@ -636,18 +636,39 @@ export default function App() {
       // included, deleted pages removed, rotations applied) in ORG SCAN,
       // named after the chosen folder; the MINUTES section is excluded when
       // the setting is on (default).
+      const hasTags = pages.some(p => !p.isDeleted && p.tag);
       if (!targetTag) {
         if (shouldCancel()) throw new ExportCancelled();
-        setExportProgress('Building the cleaned master (ORG SCAN)…');
-        const masterPages = excludeMinutesFromMaster
-          ? pages.filter(p => (p.tag ?? '').toLowerCase() !== MASTER_EXCLUDE_TAG.toLowerCase())
-          : pages;
-        const cleaned = await buildCleanedDocument(pdfBuffer, masterPages);
-        if (cleaned) {
-          processedFiles.push({
-            fileName: `${ORG_SCAN_FOLDER}/${sanitizeExportFileName(folderName)}.pdf`,
-            data: cleaned,
-          });
+        if (!hasTags) {
+          // Pure edit-and-save (no tags): one file. Offer to keep the original
+          // name (overwrites when saved into its folder) or pick a new name.
+          setExportProgress('Building the document…');
+          const cleaned = await buildCleanedDocument(pdfBuffer, pages);
+          if (cleaned) {
+            const orig = (pdfFile?.name.replace(/\.pdf$/i, '') || 'document');
+            let outName = orig;
+            const overwrite = window.confirm(
+              `Save over the original "${orig}.pdf"?\n\nOK = keep the same name\nCancel = choose a new name`
+            );
+            if (!overwrite) {
+              const entered = window.prompt('Save as (file name, without .pdf):', orig);
+              if (entered === null) { setIsExporting(false); setExportProgress(''); return; }
+              if (entered.trim()) outName = entered.trim();
+            }
+            processedFiles.push({ fileName: `${sanitizeExportFileName(outName)}.pdf`, data: cleaned });
+          }
+        } else {
+          setExportProgress('Building the cleaned master (ORG SCAN)…');
+          const masterPages = excludeMinutesFromMaster
+            ? pages.filter(p => (p.tag ?? '').toLowerCase() !== MASTER_EXCLUDE_TAG.toLowerCase())
+            : pages;
+          const cleaned = await buildCleanedDocument(pdfBuffer, masterPages);
+          if (cleaned) {
+            processedFiles.push({
+              fileName: `${ORG_SCAN_FOLDER}/${sanitizeExportFileName(folderName)}.pdf`,
+              data: cleaned,
+            });
+          }
         }
       }
 
