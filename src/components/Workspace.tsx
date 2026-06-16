@@ -72,8 +72,8 @@ interface WorkspaceProps {
   onSetPresets: (presets: string[]) => void;
   onSetExportNames: (names: Record<string, string>) => void;
   onSetOutputDirectory: (dir: string) => void;
-  excludeMinutesFromMaster: boolean;
-  onSetExcludeMinutesFromMaster: (v: boolean) => void;
+  masterExcludeTags: string[];
+  onSetMasterExcludeTags: (tags: string[]) => void;
   onExport: (targetTag?: string) => void;
   onBack: () => void;
   onScanCover: () => void;
@@ -117,8 +117,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onSetPresets,
   onSetExportNames,
   onSetOutputDirectory,
-  excludeMinutesFromMaster,
-  onSetExcludeMinutesFromMaster,
+  masterExcludeTags,
+  onSetMasterExcludeTags,
   onExport,
   onBack,
   onScanCover,
@@ -153,6 +153,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const [loadingPdf, setLoadingPdf] = useState(true);
   // Settings panel
   const [showSettings, setShowSettings] = useState(false);
+  const [excludeTagInput, setExcludeTagInput] = useState('');
   const [showWordsPanel, setShowWordsPanel] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
   const wordsPanelRef = useRef<HTMLDivElement>(null);
@@ -1513,16 +1514,41 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           </div>
 
           <div>
-            <div className="settings-section-title">Original scan (ORG SCAN)</div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={excludeMinutesFromMaster}
-                onChange={e => onSetExcludeMinutesFromMaster(e.target.checked)}
-                style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
-              />
-              Exclude the MINUTES section from the full file
-            </label>
+            <div className="settings-section-title">Exclude from full file (ORG SCAN)</div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6 }}>
+              Sections whose name contains any of these are left out of the full file.
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+              {masterExcludeTags.length === 0 && (
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>None — full file includes everything.</span>
+              )}
+              {masterExcludeTags.map(t => (
+                <span key={t} className="tag-pop-chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'default' }}>
+                  {t}
+                  <button
+                    title="Remove"
+                    style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: 0, lineHeight: 1 }}
+                    onClick={() => onSetMasterExcludeTags(masterExcludeTags.filter(x => x !== t))}
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+            <input
+              type="text"
+              value={excludeTagInput}
+              placeholder="Add a tag to exclude, then Enter"
+              onChange={e => setExcludeTagInput(e.target.value.toUpperCase())}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  const v = excludeTagInput.trim();
+                  if (v) onSetMasterExcludeTags([...masterExcludeTags, v]);
+                  setExcludeTagInput('');
+                }
+              }}
+              style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: '6px 8px', border: '1px solid var(--separator)', borderRadius: 6, textTransform: 'uppercase' }}
+            />
           </div>
 
           <div>

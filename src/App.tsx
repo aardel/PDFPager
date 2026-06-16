@@ -60,8 +60,6 @@ const SEED_TAGS = [
 ];
 const SEED_VERSION = '2026-06-13-casefiles';
 
-// The full cleaned master saved into ORG SCAN omits this section.
-const MASTER_EXCLUDE_TAG = 'MINUTES';
 // Subfolder (next to the split files) holding the cleaned master.
 const ORG_SCAN_FOLDER = 'ORG SCAN';
 
@@ -95,13 +93,20 @@ export default function App() {
   const [presets, setPresets] = useState<string[]>([]);
   const [exportNames, setExportNames] = useState<Record<string, string>>({});
   const [outputDirectory, setOutputDirectory] = useState<string>('');
-  // Exclude the MINUTES section from the ORG SCAN master (default on).
-  const [excludeMinutesFromMaster, setExcludeMinutesFromMaster] = useState(
-    localStorage.getItem('pdf_pager_exclude_minutes_master') !== '0'
-  );
-  const handleSetExcludeMinutes = (v: boolean) => {
-    setExcludeMinutesFromMaster(v);
-    localStorage.setItem('pdf_pager_exclude_minutes_master', v ? '1' : '0');
+  // Tags whose pages are excluded from the ORG SCAN master. Matched as a
+  // case-insensitive substring so an order prefix (e.g. "000 MINUTES") still
+  // matches "MINUTES". Editable in Settings; default excludes MINUTES.
+  const [masterExcludeTags, setMasterExcludeTags] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('pdf_pager_master_exclude_tags');
+      if (raw) return JSON.parse(raw);
+    } catch { /* fall through to default */ }
+    return ['MINUTES'];
+  });
+  const handleSetMasterExcludeTags = (tags: string[]) => {
+    const cleaned = dedupeTags(tags);
+    setMasterExcludeTags(cleaned);
+    localStorage.setItem('pdf_pager_master_exclude_tags', JSON.stringify(cleaned));
   };
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
@@ -677,8 +682,9 @@ export default function App() {
       if (!targetTag) {
         if (shouldCancel()) throw new ExportCancelled();
         setExportProgress('Building the cleaned master (ORG SCAN)…');
-        const masterPages = excludeMinutesFromMaster
-          ? pages.filter(p => (p.tag ?? '').toLowerCase() !== MASTER_EXCLUDE_TAG.toLowerCase())
+        const ex = masterExcludeTags.map(t => t.trim().toLowerCase()).filter(Boolean);
+        const masterPages = ex.length
+          ? pages.filter(p => { const t = (p.tag ?? '').toLowerCase(); return !ex.some(e => t.includes(e)); })
           : pages;
         const cleaned = await buildCleanedDocument(pdfBuffer, masterPages);
         if (cleaned) {
@@ -828,8 +834,8 @@ export default function App() {
             onSetPresets={handleSetPresets}
             onSetExportNames={handleSetExportNames}
             onSetOutputDirectory={handleSetOutputDirectory}
-            excludeMinutesFromMaster={excludeMinutesFromMaster}
-            onSetExcludeMinutesFromMaster={handleSetExcludeMinutes}
+            masterExcludeTags={masterExcludeTags}
+            onSetMasterExcludeTags={handleSetMasterExcludeTags}
             onExport={handleExport}
             onBack={handleBackToWelcome}
             onScanCover={() => setShowScanModal(true)}
