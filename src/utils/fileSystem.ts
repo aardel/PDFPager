@@ -18,6 +18,58 @@ export function supportsFileSystemAccess(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
 }
 
+export function supportsSaveFilePicker(): boolean {
+  return typeof window !== 'undefined' && 'showSaveFilePicker' in window;
+}
+
+// Remembered single-file save targets for the session, keyed by the active
+// file. Lets "save" overwrite the same file silently after the first pick.
+const saveHandles = new Map<string, any>();
+
+export function hasSaveTarget(key: string): boolean {
+  return saveHandles.has(key);
+}
+export function forgetSaveTarget(key: string): void {
+  saveHandles.delete(key);
+}
+
+async function ensureRW(handle: any): Promise<boolean> {
+  try {
+    if ((await handle.queryPermission?.({ mode: 'readwrite' })) === 'granted') return true;
+    if ((await handle.requestPermission?.({ mode: 'readwrite' })) === 'granted') return true;
+  } catch { /* needs a user gesture — treat as denied */ }
+  return false;
+}
+
+/**
+ * Save one PDF via the native Save As picker. Reuses the remembered target for
+ * `key` (silent overwrite); `forcePick` ignores it (Save As… to a new name).
+ * Returns 'saved' | 'cancelled' | 'unsupported'.
+ */
+export async function saveSinglePdf(
+  key: string, data: Uint8Array, suggestedName: string, forcePick = false,
+): Promise<'saved' | 'cancelled' | 'unsupported'> {
+  if (!supportsSaveFilePicker()) return 'unsupported';
+  let handle = forcePick ? null : saveHandles.get(key);
+  if (!handle) {
+    try {
+      handle = await (window as any).showSaveFilePicker({
+        suggestedName,
+        types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
+      });
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return 'cancelled';
+      throw err;
+    }
+  }
+  if (!(await ensureRW(handle))) return 'cancelled';
+  const writable = await handle.createWritable();
+  await writable.write(data);
+  await writable.close();
+  saveHandles.set(key, handle);
+  return 'saved';
+}
+
 export function hasOutputDirectory(): boolean {
   return !!dirHandle;
 }

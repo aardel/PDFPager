@@ -16,6 +16,8 @@ import {
   pickOutputDirectory,
   writeFilesToDirectory,
   getOutputDirectoryName,
+  supportsSaveFilePicker,
+  saveSinglePdf,
 } from './utils/fileSystem';
 import { FileText, X, Plus, LogOut } from 'lucide-react';
 import { useAuth } from './components/AuthGate';
@@ -609,6 +611,39 @@ export default function App() {
         return;
       }
 
+      // Edit-and-save: a full export with nothing tagged saves ONE PDF via the
+      // native Save As picker (a real file write with an overwrite prompt),
+      // remembered per file so subsequent saves overwrite the same file
+      // silently. Handled before the folder picker so we don't also prompt for
+      // a directory.
+      const hasTags = pages.some(p => !p.isDeleted && p.tag);
+      if (!targetTag && !hasTags) {
+        if (shouldCancel()) throw new ExportCancelled();
+        setExportProgress('Building the document…');
+        const cleaned = await buildCleanedDocument(pdfBuffer, pages);
+        if (!cleaned) { alert('No active pages to export.'); setIsExporting(false); setExportProgress(''); return; }
+        const baseName = (pdfFile?.name.replace(/\.pdf$/i, '') || 'document');
+        const key = activeFileKeyRef.current || baseName;
+        if (supportsSaveFilePicker()) {
+          const res = await saveSinglePdf(key, cleaned, `${baseName}.pdf`, false);
+          if (res === 'cancelled') { setIsExporting(false); setExportProgress(''); return; }
+          if (res === 'saved') {
+            setExportProgress('Saved ✓');
+            setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
+            return;
+          }
+          // 'unsupported' → fall through to download
+        }
+        const blob = new Blob([cleaned.buffer as ArrayBuffer], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `${baseName}.pdf`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
+        return;
+      }
+
       // Resolve the destination folder up front — the full export's master is
       // named after it. Returns null if the user cancelled the picker; '' if
       // there's no real folder (download fallback → master keeps source name).
@@ -636,39 +671,21 @@ export default function App() {
       // included, deleted pages removed, rotations applied) in ORG SCAN,
       // named after the chosen folder; the MINUTES section is excluded when
       // the setting is on (default).
-      const hasTags = pages.some(p => !p.isDeleted && p.tag);
+      // Tagged full export also archives a cleaned master in ORG SCAN, named
+      // after the chosen folder; the MINUTES section is excluded when the
+      // setting is on (default). (The no-tags case returned above.)
       if (!targetTag) {
         if (shouldCancel()) throw new ExportCancelled();
-        if (!hasTags) {
-          // Pure edit-and-save (no tags): one file. Offer to keep the original
-          // name (overwrites when saved into its folder) or pick a new name.
-          setExportProgress('Building the document…');
-          const cleaned = await buildCleanedDocument(pdfBuffer, pages);
-          if (cleaned) {
-            const orig = (pdfFile?.name.replace(/\.pdf$/i, '') || 'document');
-            let outName = orig;
-            const overwrite = window.confirm(
-              `Save over the original "${orig}.pdf"?\n\nOK = keep the same name\nCancel = choose a new name`
-            );
-            if (!overwrite) {
-              const entered = window.prompt('Save as (file name, without .pdf):', orig);
-              if (entered === null) { setIsExporting(false); setExportProgress(''); return; }
-              if (entered.trim()) outName = entered.trim();
-            }
-            processedFiles.push({ fileName: `${sanitizeExportFileName(outName)}.pdf`, data: cleaned });
-          }
-        } else {
-          setExportProgress('Building the cleaned master (ORG SCAN)…');
-          const masterPages = excludeMinutesFromMaster
-            ? pages.filter(p => (p.tag ?? '').toLowerCase() !== MASTER_EXCLUDE_TAG.toLowerCase())
-            : pages;
-          const cleaned = await buildCleanedDocument(pdfBuffer, masterPages);
-          if (cleaned) {
-            processedFiles.push({
-              fileName: `${ORG_SCAN_FOLDER}/${sanitizeExportFileName(folderName)}.pdf`,
-              data: cleaned,
-            });
-          }
+        setExportProgress('Building the cleaned master (ORG SCAN)…');
+        const masterPages = excludeMinutesFromMaster
+          ? pages.filter(p => (p.tag ?? '').toLowerCase() !== MASTER_EXCLUDE_TAG.toLowerCase())
+          : pages;
+        const cleaned = await buildCleanedDocument(pdfBuffer, masterPages);
+        if (cleaned) {
+          processedFiles.push({
+            fileName: `${ORG_SCAN_FOLDER}/${sanitizeExportFileName(folderName)}.pdf`,
+            data: cleaned,
+          });
         }
       }
 
