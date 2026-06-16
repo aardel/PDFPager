@@ -599,8 +599,11 @@ export default function App() {
         shouldCancel
       );
 
-      if (processedFiles.length === 0) {
-        alert(targetTag ? `No active pages tagged as "${targetTag}".` : 'No tagged pages to export.');
+      // A per-section export with no matching pages is an error; but a full
+      // export with no tags is fine — it just saves the cleaned master below
+      // (e.g. you only deleted pages and want the result).
+      if (processedFiles.length === 0 && targetTag) {
+        alert(`No active pages tagged as "${targetTag}".`);
         setIsExporting(false);
         setExportProgress('');
         return;
@@ -646,6 +649,13 @@ export default function App() {
             data: cleaned,
           });
         }
+      }
+
+      if (processedFiles.length === 0) {
+        alert('No active pages to export.');
+        setIsExporting(false);
+        setExportProgress('');
+        return;
       }
 
       if (shouldCancel()) throw new ExportCancelled();
