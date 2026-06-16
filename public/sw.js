@@ -9,7 +9,7 @@
  *    icons) is network-first with cache fallback, so deploys are picked up
  *    on the next load but the app still opens offline.
  */
-const CACHE = 'pdfpager-v2'; // bump when /vendor/, scan-worker.js, or scan.html change materially
+const CACHE = 'pdfpager-v3'; // bump when /vendor/, scan-worker.js, or scan.html change materially
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -41,7 +41,11 @@ self.addEventListener('fetch', (e) => {
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     try {
-      const res = await fetch(e.request);
+      // Bypass the HTTP cache for the shell. Otherwise a heuristically-cached
+      // index.html (no Cache-Control on older responses) gets served here and
+      // keeps pointing at a content-hashed asset the latest deploy deleted →
+      // 404 / blank page. 'no-store' guarantees we always revalidate the shell.
+      const res = await fetch(e.request, { cache: 'no-store' });
       if (res.ok) cache.put(e.request, res.clone());
       return res;
     } catch (err) {

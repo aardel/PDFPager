@@ -11,8 +11,18 @@ type Store = Record<string, Entry>;           // keyed by lowercase word
 function load(): Store {
   try { return JSON.parse(localStorage.getItem(KEY) || '{}') as Store; } catch { return {}; }
 }
-function save(s: Store): void {
+
+// Local edits notify subscribers (App) so the change can be pushed to the
+// server-side tag store. `silent` skips the notification for writes that came
+// FROM the server (importWords), so loading can't bounce straight back up.
+const listeners = new Set<() => void>();
+export function onWordsChanged(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+function save(s: Store, silent = false): void {
   try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* quota — non-fatal */ }
+  if (!silent) for (const fn of listeners) fn();
 }
 
 // Words worth remembering: drop 1-char noise; keep the original casing.
@@ -84,4 +94,21 @@ export function removeWord(word: string): void {
   const s = load();
   delete s[word.trim().toLowerCase()];
   save(s);
+}
+
+/** Snapshot every stored word for syncing up to the server. */
+export function exportWords(): Entry[] {
+  return Object.values(load());
+}
+
+/** Replace the local store with the server's copy (no change notification). */
+export function importWords(entries: Entry[]): void {
+  const s: Store = {};
+  for (const e of entries) {
+    if (e && typeof e.w === 'string' && Number.isFinite(e.n)) {
+      const w = e.w.trim();
+      if (w.length >= 2) s[w.toLowerCase()] = { w, n: e.n };
+    }
+  }
+  save(s, true);
 }

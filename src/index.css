@@ -45,6 +45,64 @@
   /* Semantic tag colours */
   --tag-label: #C62828;
   --export-name: #2E7D32;
+
+  --accent-active: #0055B3;
+
+  /* Frosted-glass bars/panels and scrollbars (themed below). */
+  --glass: rgba(255,255,255,0.85);
+  --glass-strong: rgba(255,255,255,0.96);
+  --scrollbar: rgba(0,0,0,0.15);
+  --scrollbar-hover: rgba(0,0,0,0.28);
+
+  color-scheme: light;
+}
+
+/* ===== Dark theme =====
+ * Only the design-system variables change; everything else is expressed in
+ * terms of them. Document "paper" areas (thumbnail/page canvases) stay light
+ * on purpose — PDF pages are white. */
+[data-theme="dark"] {
+  --bg-app: #1C1C1E;
+  --bg-sidebar: #2C2C2E;
+  --bg-card: #2C2C2E;
+  --bg-input: #1C1C1E;
+  --bg-hover: #3A3A3C;
+  --bg-selected: rgba(10, 132, 255, 0.22);
+
+  --separator: #38383A;
+  --separator-strong: #48484A;
+
+  --text-primary: #F5F5F7;
+  --text-secondary: #AEAEB2;
+  --text-tertiary: #8E8E93;
+  --text-on-accent: #FFFFFF;
+
+  --accent: #0A84FF;
+  --accent-hover: #409CFF;
+  --accent-active: #0060DF;
+  --accent-light: rgba(10, 132, 255, 0.20);
+  --accent-glow: rgba(10, 132, 255, 0.30);
+
+  --danger: #FF453A;
+  --danger-light: rgba(255, 69, 58, 0.18);
+  --warning: #FF9F0A;
+  --warning-light: rgba(255, 159, 10, 0.18);
+  --success: #30D158;
+
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.30), 0 1px 3px rgba(0,0,0,0.40);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.40), 0 1px 2px rgba(0,0,0,0.30);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.45), 0 2px 4px rgba(0,0,0,0.35);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.50), 0 4px 8px rgba(0,0,0,0.40);
+
+  --tag-label: #FF6B6B;
+  --export-name: #5DD879;
+
+  --glass: rgba(40, 40, 43, 0.82);
+  --glass-strong: rgba(48, 48, 51, 0.94);
+  --scrollbar: rgba(255, 255, 255, 0.18);
+  --scrollbar-hover: rgba(255, 255, 255, 0.32);
+
+  color-scheme: dark;
 }
 
 /* ===== Reset ===== */
@@ -75,10 +133,10 @@ body {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,0.15);
+  background: var(--scrollbar);
   border-radius: var(--radius-full);
 }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.28); }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
 
 /* ===== Typography ===== */
 h1, h2, h3, h4 {
@@ -111,7 +169,7 @@ input[type="text"]:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: rgba(255,255,255,0.85);
+  background: var(--glass);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-bottom: 1px solid var(--separator);
@@ -308,7 +366,7 @@ input[type="text"]:focus {
   box-shadow: var(--shadow-xs);
 }
 .btn-primary:hover { background: var(--accent-hover); box-shadow: var(--shadow-sm); }
-.btn-primary:active { background: #0055B3; }
+.btn-primary:active { background: var(--accent-active); }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .btn-secondary {
@@ -858,7 +916,7 @@ input[type="text"]:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: rgba(255,255,255,0.9);
+  background: var(--glass);
   border-bottom: 1px solid var(--separator);
   flex-shrink: 0;
   gap: 12px;
@@ -911,7 +969,7 @@ input[type="text"]:focus {
 /* ===== Tagger Panel (below preview) ===== */
 .tagger-bar {
   padding: 14px 20px;
-  background: rgba(255,255,255,0.95);
+  background: var(--glass-strong);
   border-top: 1px solid var(--separator);
   flex-shrink: 0;
   display: flex;
@@ -1069,7 +1127,7 @@ input[type="text"]:focus {
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  background: rgba(255,255,255,0.82);
+  background: var(--glass);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1.5px solid rgba(0,0,0,0.10);
@@ -1084,13 +1142,13 @@ input[type="text"]:focus {
 }
 .tag-overlay-trigger:hover,
 .tag-overlay-trigger.open {
-  background: rgba(255,255,255,0.96);
+  background: var(--glass-strong);
   border-color: var(--accent);
   color: var(--accent);
 }
 
 .tag-overlay-panel {
-  background: rgba(255,255,255,0.96);
+  background: var(--glass-strong);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--separator);
@@ -1724,7 +1782,7 @@ input[type="text"]:focus {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--glass);
   border-radius: 3px;
 }
 .section-grid-page-num {

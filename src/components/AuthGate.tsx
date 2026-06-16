@@ -44,7 +44,11 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
       setPassword('');
     } else {
       setPassword('');
-      setState('in');
+      // Force a fresh boot on sign-in so every user lands on the latest
+      // deployed bundle (no stale SW/HTML lingering from a previous session).
+      // The token is already persisted by login(), so the reload re-verifies
+      // cleanly into the app rather than looping back to this screen.
+      window.location.reload();
     }
   };
 

@@ -7,3 +7,6 @@ Thumbs.db
 .env
 .env.*
 *.local
+
+# Runtime tag-store volume (server-side presets/words)
+data/

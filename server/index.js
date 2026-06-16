@@ -18,10 +18,17 @@ const express = require('express');
 const multer = require('multer');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
+const fs = require('fs');
+const path = require('path');
 
 const PORT = process.env.PORT || 3600;
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+// Durable tag store (presets + learned words). Lives on a mounted volume so it
+// survives container rebuilds; a single shared store is fine (one login).
+const DATA_DIR = process.env.PDFPAGER_DATA_DIR || '/data';
+const TAGS_FILE = path.join(DATA_DIR, 'tags.json');
 
 // ---------------------------------------------------------------- auth
 // Gate for the main app (the SPA), NOT the scan page. Credentials and the
@@ -64,7 +71,14 @@ function verifyAuthToken(token) {
 
 const app = express();
 app.set('trust proxy', true);
-app.use(express.json({ limit: '4kb' }));
+// Keep the global body limit tiny (login is the only other JSON route); the
+// tag store can hold thousands of learned words, so it parses its own larger
+// body on the PUT route below.
+const smallJson = express.json({ limit: '4kb' });
+app.use((req, res, next) => {
+  if (req.path === '/api/tags') return next();
+  return smallJson(req, res, next);
+});
 
 // ---------------------------------------------------------------- sessions
 // token  → session  (desktop + phone both use the token)
@@ -202,6 +216,71 @@ app.get('/api/auth/verify', (req, res) => {
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   if (!verifyAuthToken(token)) {
     return res.status(401).json({ success: false });
+  }
+  res.json({ success: true });
+});
+
+// ------------------------------------------------------------------- tags
+// Server-side tag store so presets + learned words follow the (single) user
+// across browsers, devices, and the three pdfpager domains. Gated by the same
+// auth token as the SPA.
+function authed(req, res) {
+  const auth = req.get('authorization') || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!verifyAuthToken(token)) {
+    res.status(401).json({ success: false });
+    return false;
+  }
+  return true;
+}
+
+function readTags() {
+  try {
+    const data = JSON.parse(fs.readFileSync(TAGS_FILE, 'utf8'));
+    return {
+      presets: Array.isArray(data.presets) ? data.presets : [],
+      words: Array.isArray(data.words) ? data.words : [],
+    };
+  } catch {
+    return { presets: [], words: [] }; // no file yet → empty store
+  }
+}
+
+// Atomic write (tmp + rename) so a crash mid-write can't truncate the store.
+function writeTags(data) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const tmp = `${TAGS_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data));
+  fs.renameSync(tmp, TAGS_FILE);
+}
+
+app.get('/api/tags', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (!authed(req, res)) return;
+  const t = readTags();
+  res.json({ success: true, presets: t.presets, words: t.words });
+});
+
+app.put('/api/tags', express.json({ limit: '1mb' }), (req, res) => {
+  if (!authed(req, res)) return;
+  const body = req.body || {};
+  const presets = Array.isArray(body.presets)
+    ? body.presets
+        .filter((p) => typeof p === 'string' && p.trim())
+        .map((p) => p.slice(0, 200))
+        .slice(0, 2000)
+    : [];
+  const words = Array.isArray(body.words)
+    ? body.words
+        .filter((w) => w && typeof w.w === 'string' && Number.isFinite(w.n))
+        .map((w) => ({ w: w.w.slice(0, 100), n: Math.max(1, Math.floor(w.n)) }))
+        .slice(0, 10000)
+    : [];
+  try {
+    writeTags({ presets, words });
+  } catch (err) {
+    console.error('writeTags failed:', err);
+    return res.status(500).json({ success: false, error: 'Could not save tags' });
   }
   res.json({ success: true });
 });

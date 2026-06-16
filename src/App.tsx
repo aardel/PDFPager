@@ -19,9 +19,12 @@ import {
   supportsSaveFilePicker,
   saveSinglePdf,
 } from './utils/fileSystem';
-import { FileText, X, Plus, LogOut } from 'lucide-react';
+import { FileText, X, Plus, LogOut, Sun, Moon } from 'lucide-react';
 import { useAuth } from './components/AuthGate';
 import { authRequired } from './utils/auth';
+import { getTheme, toggleTheme, type Theme } from './utils/theme';
+import { exportWords, importWords, onWordsChanged } from './utils/wordStore';
+import { fetchTags, scheduleSaveTags, markSyncReady } from './utils/tagStore';
 
 interface ElectronAPI {
   selectDirectory: () => Promise<string | null>;
@@ -79,6 +82,7 @@ function dedupeTags(tags: string[]): string[] {
 
 export default function App() {
   const { logout } = useAuth();
+  const [theme, setThemeState] = useState<Theme>(getTheme);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   // sourceBuffer = uncropped (original + scanned covers). pdfBuffer = the
   // baked buffer with crops applied as CropBoxes; it's what the preview,
@@ -91,6 +95,10 @@ export default function App() {
   const [cropTargetId, setCropTargetId] = useState<number | null>(null);
   const [pages, setPages] = useState<ProcessedPage[]>([]);
   const [presets, setPresets] = useState<string[]>([]);
+  // Mirror of `presets` so the word-change subscriber can push the current
+  // presets alongside the words without re-subscribing on every preset edit.
+  const presetsRef = useRef<string[]>([]);
+  useEffect(() => { presetsRef.current = presets; }, [presets]);
   const [exportNames, setExportNames] = useState<Record<string, string>>({});
   const [outputDirectory, setOutputDirectory] = useState<string>('');
   // Tags whose pages are excluded from the ORG SCAN master. Matched as a
@@ -229,30 +237,61 @@ export default function App() {
   }, [pdfFile, undo, redo]);
 
   useEffect(() => {
-    let existing: string[] = [];
+    // Local (offline cache) presets come up first so the UI is never empty.
+    let local: string[] = [];
     const saved = localStorage.getItem('pdf_pager_presets');
     if (saved) {
-      try { existing = filterBasicPresets(JSON.parse(saved)); } catch { existing = []; }
+      try { local = filterBasicPresets(JSON.parse(saved)); } catch { local = []; }
     }
 
     if (localStorage.getItem('pdf_pager_presets_seed') !== SEED_VERSION) {
       // One-time seed: replace whatever was saved with exactly SEED_TAGS.
-      const seeded = dedupeTags(SEED_TAGS);
-      setPresets(seeded);
-      localStorage.setItem('pdf_pager_presets', JSON.stringify(seeded));
+      local = dedupeTags(SEED_TAGS);
+      localStorage.setItem('pdf_pager_presets', JSON.stringify(local));
       localStorage.setItem('pdf_pager_presets_seed', SEED_VERSION);
-    } else {
-      setPresets(existing);
     }
+    setPresets(local);
 
     const savedDir = localStorage.getItem('pdf_pager_output_dir');
     if (savedDir) setOutputDirectory(savedDir);
+
+    // Reconcile with the server-side store: it's the source of truth across
+    // browsers/devices/domains. If the server is still empty (first-ever run),
+    // seed it from this device's local copy. Pushes stay disabled until this
+    // settles so the boot-time seed can't overwrite an existing server store.
+    let cancelled = false;
+    (async () => {
+      const remote = await fetchTags();
+      if (cancelled) return;
+      if (remote && (remote.presets.length > 0 || remote.words.length > 0)) {
+        const serverPresets = dedupeTags(filterBasicPresets(remote.presets));
+        setPresets(serverPresets);
+        localStorage.setItem('pdf_pager_presets', JSON.stringify(serverPresets));
+        importWords(remote.words);
+        markSyncReady();
+      } else {
+        // Server unreachable (offline) or empty: keep local. If reachable but
+        // empty, seed it from local now that pushes are enabled.
+        markSyncReady();
+        if (remote) scheduleSaveTags({ presets: local, words: exportWords() });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Any local word-store change (autocomplete learning, Settings word editor)
+  // pushes the whole bundle (current presets + words) to the server, debounced.
+  useEffect(() => {
+    return onWordsChanged(() => {
+      scheduleSaveTags({ presets: presetsRef.current, words: exportWords() });
+    });
   }, []);
 
   const handleSetPresets = (p: string[]) => {
     const basic = dedupeTags(filterBasicPresets(p));
     setPresets(basic);
     localStorage.setItem('pdf_pager_presets', JSON.stringify(basic));
+    scheduleSaveTags({ presets: basic, words: exportWords() });
   };
 
   const handleSetOutputDirectory = (dir: string) => {
@@ -800,6 +839,15 @@ export default function App() {
         {/* Right side — view controls + logout; settings gear is fixed top-right in Workspace */}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, marginRight: pdfFile ? 44 : 8 }}>
           {workspaceChrome && <WorkspaceViewBar chrome={workspaceChrome} />}
+          <button
+            className="btn btn-sm btn-secondary"
+            onClick={() => setThemeState(toggleTheme())}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label="Toggle dark mode"
+            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+          </button>
           {authRequired() && (
             <button
               className="btn btn-sm btn-secondary"
