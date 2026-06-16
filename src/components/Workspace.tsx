@@ -72,6 +72,8 @@ interface WorkspaceProps {
   onSetPresets: (presets: string[]) => void;
   onSetExportNames: (names: Record<string, string>) => void;
   onSetOutputDirectory: (dir: string) => void;
+  excludeMinutesFromMaster: boolean;
+  onSetExcludeMinutesFromMaster: (v: boolean) => void;
   onExport: (targetTag?: string) => void;
   onBack: () => void;
   onScanCover: () => void;
@@ -115,6 +117,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onSetPresets,
   onSetExportNames,
   onSetOutputDirectory,
+  excludeMinutesFromMaster,
+  onSetExcludeMinutesFromMaster,
   onExport,
   onBack,
   onScanCover,
@@ -1506,6 +1510,19 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             <button className="btn btn-secondary btn-sm" onClick={handleSelectDirectory}>
               <FolderOpen size={12} /> Choose folder
             </button>
+          </div>
+
+          <div>
+            <div className="settings-section-title">Original scan (ORG SCAN)</div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={excludeMinutesFromMaster}
+                onChange={e => onSetExcludeMinutesFromMaster(e.target.checked)}
+                style={{ width: 15, height: 15, accentColor: 'var(--accent)', cursor: 'pointer' }}
+              />
+              Exclude the MINUTES section from the full file
+            </label>
           </div>
 
           <div>

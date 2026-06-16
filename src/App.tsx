@@ -93,6 +93,14 @@ export default function App() {
   const [presets, setPresets] = useState<string[]>([]);
   const [exportNames, setExportNames] = useState<Record<string, string>>({});
   const [outputDirectory, setOutputDirectory] = useState<string>('');
+  // Exclude the MINUTES section from the ORG SCAN master (default on).
+  const [excludeMinutesFromMaster, setExcludeMinutesFromMaster] = useState(
+    localStorage.getItem('pdf_pager_exclude_minutes_master') !== '0'
+  );
+  const handleSetExcludeMinutes = (v: boolean) => {
+    setExcludeMinutesFromMaster(v);
+    localStorage.setItem('pdf_pager_exclude_minutes_master', v ? '1' : '0');
+  };
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
   // Checked between files during export; Cancel in the progress toast sets it.
@@ -623,13 +631,14 @@ export default function App() {
 
       // Full exports also archive a cleaned master: one complete PDF (covers
       // included, deleted pages removed, rotations applied) in ORG SCAN,
-      // named after the chosen folder and excluding the MINUTES section.
+      // named after the chosen folder; the MINUTES section is excluded when
+      // the setting is on (default).
       if (!targetTag) {
         if (shouldCancel()) throw new ExportCancelled();
         setExportProgress('Building the cleaned master (ORG SCAN)…');
-        const masterPages = pages.filter(
-          p => (p.tag ?? '').toLowerCase() !== MASTER_EXCLUDE_TAG.toLowerCase()
-        );
+        const masterPages = excludeMinutesFromMaster
+          ? pages.filter(p => (p.tag ?? '').toLowerCase() !== MASTER_EXCLUDE_TAG.toLowerCase())
+          : pages;
         const cleaned = await buildCleanedDocument(pdfBuffer, masterPages);
         if (cleaned) {
           processedFiles.push({
@@ -771,6 +780,8 @@ export default function App() {
             onSetPresets={handleSetPresets}
             onSetExportNames={handleSetExportNames}
             onSetOutputDirectory={handleSetOutputDirectory}
+            excludeMinutesFromMaster={excludeMinutesFromMaster}
+            onSetExcludeMinutesFromMaster={handleSetExcludeMinutes}
             onExport={handleExport}
             onBack={handleBackToWelcome}
             onScanCover={() => setShowScanModal(true)}
