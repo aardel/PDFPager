@@ -105,6 +105,12 @@ export const PageContextMenu: React.FC<PageContextMenuProps> = ({
     <div ref={ref} className="page-context-menu fade-in" style={{ left: x, top: y }}>
       <div className="page-context-menu-title">{pageLabel}</div>
 
+      <button type="button" className="page-context-menu-item" onClick={() => { onOpenTagEditor(); onClose(); }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <Type size={13} /> Type tag…
+        </span>
+      </button>
+
       <div className="page-context-menu-title sub">
         <Tag size={12} /> Assign tag
       </div>
@@ -149,14 +155,9 @@ export const PageContextMenu: React.FC<PageContextMenuProps> = ({
       )}
 
       {words.length === 0 && usedInFile.length === 0 && (
-        <div className="page-context-menu-empty">No words or sections yet — type a tag below.</div>
+        <div className="page-context-menu-empty">No words or sections yet — type a tag above.</div>
       )}
 
-      <button type="button" className="page-context-menu-item" onClick={() => { onOpenTagEditor(); onClose(); }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <Type size={13} /> Type tag…
-        </span>
-      </button>
       {currentTag && (
         <button type="button" className="page-context-menu-item danger" onClick={() => { onClearTag(); onClose(); }}>
           Clear tag
