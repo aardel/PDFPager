@@ -24,7 +24,7 @@ import { FileText, X, Plus, LogOut, Sun, Moon } from 'lucide-react';
 import { useAuth } from './components/AuthGate';
 import { authRequired } from './utils/auth';
 import { getTheme, toggleTheme, applyStoredTheme, type Theme } from './utils/theme';
-import { exportWords, importWords, onWordsChanged } from './utils/wordStore';
+import { exportWords, importWords, onWordsChanged, pruneNumericWords } from './utils/wordStore';
 import { fetchTags, scheduleSaveTags, markSyncReady } from './utils/tagStore';
 
 interface ElectronAPI {
@@ -250,11 +250,17 @@ export default function App() {
   }, [pdfFile, undo, redo]);
 
   useEffect(() => {
+    // Clean any numeric autocomplete words learned before the numeric rule.
+    pruneNumericWords();
+
     // Local (offline cache) presets come up first so the UI is never empty.
+    // filterBasicPresets also drops noisy numeric (> 999) tags, so a stored
+    // list is cleaned as it loads; write the cleaned version straight back.
     let local: string[] = [];
     const saved = localStorage.getItem('pdf_pager_presets');
     if (saved) {
       try { local = filterBasicPresets(JSON.parse(saved)); } catch { local = []; }
+      localStorage.setItem('pdf_pager_presets', JSON.stringify(local));
     }
 
     if (localStorage.getItem('pdf_pager_presets_seed') !== SEED_VERSION) {
@@ -282,6 +288,12 @@ export default function App() {
         localStorage.setItem('pdf_pager_presets', JSON.stringify(serverPresets));
         importWords(remote.words);
         markSyncReady();
+        // If cleaning dropped any numeric noise the server still holds, persist
+        // the cleaned set back so the stored copy is fixed for every device.
+        const cleanedWords = exportWords();
+        if (serverPresets.length !== remote.presets.length || cleanedWords.length !== remote.words.length) {
+          scheduleSaveTags({ presets: serverPresets, words: cleanedWords });
+        }
       } else {
         // Server unreachable (offline) or empty: keep local. If reachable but
         // empty, seed it from local now that pushes are enabled.

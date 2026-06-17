@@ -16,9 +16,24 @@ export function isExportNameModified(tag: string, exportNames: Record<string, st
   return custom.toLowerCase() !== tag.trim().toLowerCase();
 }
 
-/** Keep only plain tags (no ***placeholder*** templates). */
+/** A tag made up entirely of digits, e.g. "030218" or "030". */
+export function isNumericTag(tag: string): boolean {
+  return /^\d+$/.test(tag.trim());
+}
+
+/** Numeric tags greater than 999 (dates, long IDs like "030218") are noise:
+ *  never saved as a preset or learned as an autocomplete word. Numeric tags
+ *  <= 999 stay usable as section tags but are hidden from the right-click
+ *  suggestions (see callers in Workspace). */
+export function isIgnoredTag(tag: string): boolean {
+  const t = tag.trim();
+  return /^\d+$/.test(t) && parseInt(t, 10) > 999;
+}
+
+/** Keep only plain tags (no ***placeholder*** templates), dropping noisy
+ *  numeric tags (> 999) — also used to clean already-saved presets. */
 export function filterBasicPresets(presets: string[]): string[] {
-  return presets.filter(p => !/\*\*\*[^*]+\*\*\*/.test(p));
+  return presets.filter(p => !/\*\*\*[^*]+\*\*\*/.test(p) && !isIgnoredTag(p));
 }
 
 /** Unique tags assigned to non-deleted pages, in first-seen document order. */

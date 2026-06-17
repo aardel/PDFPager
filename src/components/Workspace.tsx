@@ -31,6 +31,8 @@ import {
   isExportNameModified,
   sanitizeExportFileName,
   collectUsedTags,
+  isNumericTag,
+  isIgnoredTag,
 } from '../utils/tagUtils';
 import { seedWords, recordTagWords, listWords } from '../utils/wordStore';
 import {
@@ -634,6 +636,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const commitTagFromPopup = useCallback((tag: string, targets: Set<number>) => {
     const clean = tag.trim();
     if (!clean) return;
+    if (isIgnoredTag(clean)) return; // numeric > 999 (dates/long IDs) — ignore
     if (!presets.some(p => p.toLowerCase() === clean.toLowerCase())) {
       onSetPresets([...presets, clean]);
     }
@@ -804,9 +807,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const taggedCount = pages.filter(p => !p.isDeleted && p.tag).length;
   const multiSelected = selectedIds.size > 1;
 
-  // Tags already on pages in this file — for the right-click “used in this file” list.
-  const usedInFileTags = useMemo(() => collectUsedTags(pages), [pages]);
-  const tagWords = useMemo(() => listWords(), [contextMenu, tagEditorMenu, pages]);
+  // Tags already on pages in this file — for the right-click “used in this file”
+  // list. Numeric tags (e.g. "030") are kept on their pages but hidden here.
+  const usedInFileTags = useMemo(() => collectUsedTags(pages).filter(t => !isNumericTag(t)), [pages]);
+  const tagWords = useMemo(() => listWords().filter(w => !isNumericTag(w.w)), [contextMenu, tagEditorMenu, pages]);
 
   // Sidebar grouped view — untagged → preset order → orphan tags → deleted
   const sidebarGroups = useMemo(() => {

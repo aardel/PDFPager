@@ -25,9 +25,11 @@ function save(s: Store, silent = false): void {
   if (!silent) for (const fn of listeners) fn();
 }
 
-// Words worth remembering: drop 1-char noise; keep the original casing.
+// Words worth remembering: drop 1-char noise and purely-numeric tokens (dates
+// / codes like "030218" or "030" — never useful autocomplete); keep original
+// casing.
 function tokenize(text: string): string[] {
-  return text.split(/\s+/).map(w => w.trim()).filter(w => w.length >= 2);
+  return text.split(/\s+/).map(w => w.trim()).filter(w => w.length >= 2 && !/^\d+$/.test(w));
 }
 
 /** Record the words of a committed tag, bumping their frequencies. */
@@ -80,7 +82,7 @@ export function listWords(): Entry[] {
 /** Add a word to the store (or bump its count if it already exists). */
 export function addWord(word: string): boolean {
   const w = word.trim();
-  if (w.length < 2 || /\s/.test(w)) return false;
+  if (w.length < 2 || /\s/.test(w) || /^\d+$/.test(w)) return false;
   const s = load();
   const k = w.toLowerCase();
   if (s[k]) { s[k].n++; s[k].w = w; }
@@ -101,14 +103,28 @@ export function exportWords(): Entry[] {
   return Object.values(load());
 }
 
-/** Replace the local store with the server's copy (no change notification). */
+/** Replace the local store with the server's copy (no change notification).
+ *  Numeric tokens are dropped here too, so a server copy saved before this
+ *  rule can't reintroduce them. */
 export function importWords(entries: Entry[]): void {
   const s: Store = {};
   for (const e of entries) {
     if (e && typeof e.w === 'string' && Number.isFinite(e.n)) {
       const w = e.w.trim();
-      if (w.length >= 2) s[w.toLowerCase()] = { w, n: e.n };
+      if (w.length >= 2 && !/^\d+$/.test(w)) s[w.toLowerCase()] = { w, n: e.n };
     }
   }
   save(s, true);
+}
+
+/** Remove any purely-numeric words already in the store (one-time cleanup of
+ *  data learned before the numeric rule). Returns true if anything changed. */
+export function pruneNumericWords(): boolean {
+  const s = load();
+  let changed = false;
+  for (const k in s) {
+    if (/^\d+$/.test(k)) { delete s[k]; changed = true; }
+  }
+  if (changed) save(s);
+  return changed;
 }
