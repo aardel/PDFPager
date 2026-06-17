@@ -23,7 +23,7 @@ import {
 import { FileText, X, Plus, LogOut, Sun, Moon } from 'lucide-react';
 import { useAuth } from './components/AuthGate';
 import { authRequired } from './utils/auth';
-import { getTheme, toggleTheme, type Theme } from './utils/theme';
+import { getTheme, toggleTheme, applyStoredTheme, type Theme } from './utils/theme';
 import { exportWords, importWords, onWordsChanged } from './utils/wordStore';
 import { fetchTags, scheduleSaveTags, markSyncReady } from './utils/tagStore';
 
@@ -105,6 +105,10 @@ export default function App() {
   // presets alongside the words without re-subscribing on every preset edit.
   const presetsRef = useRef<string[]>([]);
   useEffect(() => { presetsRef.current = presets; }, [presets]);
+
+  // Re-apply the remembered theme on mount, so the saved light/dark choice is
+  // honoured even if the pre-paint inline script didn't run (stale shell).
+  useEffect(() => { setThemeState(applyStoredTheme()); }, []);
   const [exportNames, setExportNames] = useState<Record<string, string>>({});
   const [outputDirectory, setOutputDirectory] = useState<string>('');
   // Tags whose pages are excluded from the ORG SCAN master. Matched as a
