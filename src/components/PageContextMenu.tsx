@@ -111,6 +111,8 @@ export const PageContextMenu: React.FC<PageContextMenuProps> = ({
         </span>
       </button>
 
+      <div className="page-context-menu-sep" />
+
       <div className="page-context-menu-title sub">
         <Tag size={12} /> Assign tag
       </div>
