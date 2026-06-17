@@ -6,6 +6,7 @@ import type { WorkspaceChrome } from './components/workspaceChrome';
 import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, appendPdfPages, bakeCrops, cropSignature, ProcessedPage, CropRect, ExportCancelled, isAppendedPage } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
 import { InsertPdfModal } from './components/InsertPdfModal';
+import { CoverWarningModal } from './components/CoverWarningModal';
 import { CropModal } from './components/CropModal';
 import { filterBasicPresets, getExportFileName, sanitizeExportFileName } from './utils/tagUtils';
 import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
@@ -66,6 +67,11 @@ const SEED_VERSION = '2026-06-13-casefiles';
 // Subfolder (next to the split files) holding the cleaned master.
 const ORG_SCAN_FOLDER = 'ORG SCAN';
 
+// Section that must carry a cover before exporting. Matched case-insensitively
+// as a substring (so an order prefix like "000 MINUTES" still counts), the same
+// way the ORG SCAN master exclusion identifies MINUTES.
+const COVER_REQUIRED_TAG = 'minutes';
+
 // Case-insensitive dedupe, preserving first occurrence and order.
 function dedupeTags(tags: string[]): string[] {
   const seen = new Set<string>();
@@ -118,6 +124,9 @@ export default function App() {
   };
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
+  // Set when an export is paused on the "MINUTES has no cover" warning; holds
+  // the section being exported (undefined = full export) so it can resume.
+  const [coverWarn, setCoverWarn] = useState<{ targetTag?: string } | null>(null);
   // Checked between files during export; Cancel in the progress toast sets it.
   const exportCancelRef = useRef(false);
   const activeFileKeyRef = useRef<string | null>(null);
@@ -629,7 +638,26 @@ export default function App() {
     setExportProgress('Cancelling…');
   };
 
+  // True when a MINUTES section exists in the document but none of its pages is
+  // a cover (scanned or inserted PDF). Drives the pre-export warning.
+  const minutesNeedsCover = (): boolean => {
+    const mins = pages.filter(
+      p => !p.isDeleted && (p.tag ?? '').toLowerCase().includes(COVER_REQUIRED_TAG)
+    );
+    return mins.length > 0 && !mins.some(isAppendedPage);
+  };
+
+  // Public entry point: guards every export on the MINUTES cover, then runs it.
   const handleExport = async (targetTag?: string) => {
+    if (!pdfBuffer || pages.length === 0) return;
+    if (minutesNeedsCover()) {
+      setCoverWarn({ targetTag });
+      return;
+    }
+    await runExport(targetTag);
+  };
+
+  const runExport = async (targetTag?: string) => {
     if (!pdfBuffer || pages.length === 0) return;
 
     try {
@@ -897,6 +925,19 @@ export default function App() {
           />
         )}
       </div>
+
+      {coverWarn && (
+        <CoverWarningModal
+          onExportAnyway={() => {
+            const t = coverWarn.targetTag;
+            setCoverWarn(null);
+            void runExport(t);
+          }}
+          onScan={() => { setCoverWarn(null); setShowScanModal(true); }}
+          onInsertPdf={() => { setCoverWarn(null); insertPdfInputRef.current?.click(); }}
+          onClose={() => setCoverWarn(null)}
+        />
+      )}
 
       {showScanModal && pdfFile && (
         <ScanCoverModal
