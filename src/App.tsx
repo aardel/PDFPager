@@ -8,9 +8,13 @@ import { ScanCoverModal } from './components/ScanCoverModal';
 import { InsertPdfModal } from './components/InsertPdfModal';
 import { CoverWarningModal } from './components/CoverWarningModal';
 import { CropModal } from './components/CropModal';
+import { ExportConfirmModal, type ResolvedFile } from './components/ExportConfirmModal';
+import { RestoreOriginalModal } from './components/RestoreOriginalModal';
 import { filterBasicPresets, getExportFileName, sanitizeExportFileName } from './utils/tagUtils';
-import { getFileKey, loadSession, saveSession } from './utils/sessionStorage';
+import { detectCollisions, type ManifestEntry } from './utils/exportPlan';
+import { getFileKey, loadSession, saveSession, deleteSession } from './utils/sessionStorage';
 import { saveCoverImage, loadCoverImage, loadCoverRaw, pruneCoverImages } from './utils/coverStore';
+import { saveOriginal, loadOriginal, hasOriginal } from './utils/originalStore';
 import {
   supportsFileSystemAccess,
   hasOutputDirectory,
@@ -19,8 +23,9 @@ import {
   getOutputDirectoryName,
   supportsSaveFilePicker,
   saveSinglePdf,
+  probeExistingFiles,
 } from './utils/fileSystem';
-import { FileText, X, Plus, LogOut, Sun, Moon } from 'lucide-react';
+import { FileText, X, Plus, LogOut, Sun, Moon, ShieldCheck } from 'lucide-react';
 import { useAuth } from './components/AuthGate';
 import { authRequired } from './utils/auth';
 import { getTheme, toggleTheme, applyStoredTheme, type Theme } from './utils/theme';
@@ -131,6 +136,23 @@ export default function App() {
   // Set when an export is paused on the "MINUTES has no cover" warning; holds
   // the section being exported (undefined = full export) so it can resume.
   const [coverWarn, setCoverWarn] = useState<{ targetTag?: string } | null>(null);
+  // Set when an export is paused on the pre-write confirm modal. Holds the
+  // manifest + conflicts to show; pendingCommitRef holds the write to resume.
+  const [exportPlan, setExportPlan] = useState<{
+    entries: ManifestEntry[];
+    existing: Set<string>;
+    collisions: Map<string, number[]>;
+    destinationLabel?: string;
+    canDetectExisting: boolean;
+  } | null>(null);
+  const pendingCommitRef = useRef<((resolved: ResolvedFile[]) => Promise<void>) | null>(null);
+  // "Don't ask again this session" — suppresses the confirm modal only when
+  // there are no conflicts (overwrites/collisions always prompt).
+  const dontAskExportRef = useRef(false);
+  // Whether the active file's pristine original is vaulted (drives the header
+  // "Original safe ✓ / Restore" control); set on load.
+  const [hasVaultedOriginal, setHasVaultedOriginal] = useState(false);
+  const [showRestoreOriginal, setShowRestoreOriginal] = useState(false);
   // Checked between files during export; Cancel in the progress toast sets it.
   const exportCancelRef = useRef(false);
   const activeFileKeyRef = useRef<string | null>(null);
@@ -482,6 +504,38 @@ export default function App() {
     handleSetPages(next);
   }, [handleSetPages]);
 
+  // Restore original / start over: pull the pristine bytes from the vault,
+  // discard every edit/tag/cover/insert for this file, and reopen it fresh.
+  // Keeps the same fileKey so the vault entry stays valid.
+  const restoreOriginal = async () => {
+    const fileKey = activeFileKeyRef.current;
+    if (!fileKey || !pdfFile) return;
+    try {
+      const orig = await loadOriginal(fileKey);
+      if (!orig) { alert("The original copy isn't available for this file. It may have been opened before this feature existed."); return; }
+      deleteSession(fileKey);
+      await pruneCoverImages(fileKey, new Set()).catch(() => {});
+      const buffer = orig.bytes.slice(0);
+      const pageCount = await getPdfPageCount(buffer);
+      const freshPages: ProcessedPage[] = Array.from({ length: pageCount }, (_, idx) => ({
+        id: idx + 1,
+        pageIndex: idx,
+        isDeleted: false,
+        isBlank: false,
+        rotation: 0,
+      }));
+      const baked = await bakeCrops(buffer, freshPages);
+      resetHistory();
+      lastBakeRef.current = { src: buffer, sig: cropSignature(freshPages) };
+      setSourceBuffer(buffer);
+      setPdfBuffer(baked);
+      setPages(freshPages);
+      setExportNames({});
+    } catch (e: any) {
+      alert(`Restore failed: ${e.message}`);
+    }
+  };
+
   // Reads a file's bytes and makes it the active document. Per-file tags and
   // progress are restored from the saved session (keyed by file metadata).
   const loadFile = (file: File) => {
@@ -496,6 +550,15 @@ export default function App() {
         const pageCount = await getPdfPageCount(buffer);
         if (token !== loadTokenRef.current) return; // superseded by a newer switch
         const fileKey = getFileKey(file);
+
+        // Vault the pristine original on first open so "Restore original / start
+        // over" can always recover it (best-effort — IndexedDB may be off).
+        try {
+          const alreadyVaulted = await hasOriginal(fileKey);
+          if (!alreadyVaulted) await saveOriginal(fileKey, file.name, buffer);
+          if (token === loadTokenRef.current) setHasVaultedOriginal(true);
+        } catch { if (token === loadTokenRef.current) setHasVaultedOriginal(false); }
+
         const saved = loadSession(fileKey, pageCount);
 
         let initialPages: ProcessedPage[] = saved?.pages ?? Array.from(
@@ -625,6 +688,7 @@ export default function App() {
       setExportNames({});
       activeFileKeyRef.current = null;
       setActiveKey(null);
+      setHasVaultedOriginal(false);
       resetHistory();
     }
   };
@@ -646,6 +710,7 @@ export default function App() {
     activeFileKeyRef.current = null;
     setActiveKey(null);
     setQueue([]);
+    setHasVaultedOriginal(false);
     resetHistory();
   };
 
@@ -673,6 +738,48 @@ export default function App() {
     await runExport(targetTag);
   };
 
+  const finishExport = (msg = 'Done!') => {
+    setExportProgress(msg);
+    setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
+  };
+  const stopExport = () => { setIsExporting(false); setExportProgress(''); };
+
+  // Pre-write gate: show the confirm modal (listing exactly what will be saved
+  // and any conflicts) unless the user opted out this session AND nothing
+  // conflicts. `commit` performs the actual write with the user's resolution.
+  const gateExport = async (
+    entries: ManifestEntry[],
+    existing: Set<string>,
+    destinationLabel: string | undefined,
+    canDetectExisting: boolean,
+    commit: (resolved: ResolvedFile[]) => Promise<void>,
+  ) => {
+    const collisions = detectCollisions(entries);
+    const hasConflict = collisions.size > 0 || existing.size > 0;
+    if (dontAskExportRef.current && !hasConflict) {
+      await commit(entries.map((e, i) => ({ index: i, fileName: e.fileName })));
+      return;
+    }
+    pendingCommitRef.current = commit;
+    setIsExporting(false);
+    setExportProgress('');
+    setExportPlan({ entries, existing, collisions, destinationLabel, canDetectExisting });
+  };
+
+  const handleExportConfirm = async (resolved: ResolvedFile[], dontAskAgain: boolean) => {
+    if (dontAskAgain) dontAskExportRef.current = true;
+    const commit = pendingCommitRef.current;
+    pendingCommitRef.current = null;
+    setExportPlan(null);
+    if (commit) await commit(resolved);
+  };
+
+  const handleExportPlanCancel = () => {
+    pendingCommitRef.current = null;
+    setExportPlan(null);
+    stopExport();
+  };
+
   const runExport = async (targetTag?: string) => {
     if (!pdfBuffer || pages.length === 0) return;
 
@@ -694,41 +801,54 @@ export default function App() {
       // (e.g. you only deleted pages and want the result).
       if (processedFiles.length === 0 && targetTag) {
         alert(`No active pages tagged as "${targetTag}".`);
-        setIsExporting(false);
-        setExportProgress('');
+        stopExport();
         return;
       }
 
       // Edit-and-save: a full export with nothing tagged saves ONE PDF via the
       // native Save As picker (a real file write with an overwrite prompt),
       // remembered per file so subsequent saves overwrite the same file
-      // silently. Handled before the folder picker so we don't also prompt for
-      // a directory.
+      // silently. Still gated by the confirm modal so every export is reviewed.
       const hasTags = pages.some(p => !p.isDeleted && p.tag);
       if (!targetTag && !hasTags) {
         if (shouldCancel()) throw new ExportCancelled();
         setExportProgress('Building the document…');
         const cleaned = await buildCleanedDocument(pdfBuffer, pages);
-        if (!cleaned) { alert('No active pages to export.'); setIsExporting(false); setExportProgress(''); return; }
+        if (!cleaned) { alert('No active pages to export.'); stopExport(); return; }
         const baseName = (pdfFile?.name.replace(/\.pdf$/i, '') || 'document');
-        const key = activeFileKeyRef.current || baseName;
-        if (supportsSaveFilePicker()) {
-          const res = await saveSinglePdf(key, cleaned, `${baseName}.pdf`, false);
-          if (res === 'cancelled') { setIsExporting(false); setExportProgress(''); return; }
-          if (res === 'saved') {
-            setExportProgress('Saved ✓');
-            setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
-            return;
+        const activeCount = pages.filter(p => !p.isDeleted).length;
+        const entries: ManifestEntry[] = [
+          { section: 'Document', fileName: `${baseName}.pdf`, pageCount: activeCount, isMaster: false },
+        ];
+
+        const commitSingle = async (resolved: ResolvedFile[]) => {
+          if (resolved.length === 0) { stopExport(); return; }
+          const stem = resolved[0].fileName.replace(/\.pdf$/i, '');
+          try {
+            setIsExporting(true);
+            setExportProgress('Saving…');
+            const key = activeFileKeyRef.current || baseName;
+            if (supportsSaveFilePicker()) {
+              const res = await saveSinglePdf(key, cleaned, `${stem}.pdf`, false);
+              if (res === 'cancelled') { stopExport(); return; }
+              if (res === 'saved') { finishExport('Saved ✓'); return; }
+              // 'unsupported' → fall through to download
+            }
+            const blob = new Blob([cleaned.buffer as ArrayBuffer], { type: 'application/pdf' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `${stem}.pdf`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            finishExport('Saved ✓');
+          } catch (err: any) {
+            if (!(err instanceof ExportCancelled)) alert(`Export failed: ${err.message}`);
+            stopExport();
           }
-          // 'unsupported' → fall through to download
-        }
-        const blob = new Blob([cleaned.buffer as ArrayBuffer], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = `${baseName}.pdf`;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
+        };
+
+        // Native picker / download can't pre-check existing files.
+        await gateExport(entries, new Set(), undefined, false, commitSingle);
         return;
       }
 
@@ -741,7 +861,7 @@ export default function App() {
         electronDir = outputDirectory;
         if (!electronDir) {
           const selected = await window.electronAPI.selectDirectory();
-          if (!selected) { setIsExporting(false); setExportProgress(''); return; }
+          if (!selected) { stopExport(); return; }
           electronDir = selected;
           handleSetOutputDirectory(selected);
         }
@@ -749,19 +869,16 @@ export default function App() {
       } else if (supportsFileSystemAccess()) {
         if (!hasOutputDirectory()) {
           const name = await pickOutputDirectory();
-          if (!name) { setIsExporting(false); setExportProgress(''); return; }
+          if (!name) { stopExport(); return; }
           handleSetOutputDirectory(name);
         }
         folderName = getOutputDirectoryName() || folderName;
       }
 
-      // Full exports also archive a cleaned master: one complete PDF (covers
-      // included, deleted pages removed, rotations applied) in ORG SCAN,
-      // named after the chosen folder; the MINUTES section is excluded when
-      // the setting is on (default).
-      // Tagged full export also archives a cleaned master in ORG SCAN, named
-      // after the chosen folder; the MINUTES section is excluded when the
-      // setting is on (default). (The no-tags case returned above.)
+      // Full/tagged exports also archive a cleaned master: one complete PDF
+      // (covers included, deleted pages removed, rotations applied) in ORG SCAN,
+      // named after the chosen folder; MINUTES excluded when the setting is on
+      // (default). (The no-tags case returned above.)
       if (!targetTag) {
         if (shouldCancel()) throw new ExportCancelled();
         setExportProgress('Building the cleaned master (ORG SCAN)…');
@@ -774,57 +891,87 @@ export default function App() {
           processedFiles.push({
             fileName: `${ORG_SCAN_FOLDER}/${sanitizeExportFileName(folderName)}.pdf`,
             data: cleaned,
+            section: `Master (${ORG_SCAN_FOLDER})`,
+            pageCount: masterPages.filter(p => !p.isDeleted).length,
           });
         }
       }
 
       if (processedFiles.length === 0) {
         alert('No active pages to export.');
-        setIsExporting(false);
-        setExportProgress('');
+        stopExport();
         return;
       }
 
-      if (shouldCancel()) throw new ExportCancelled();
-      setExportProgress(`Saving ${processedFiles.length} file(s)…`);
+      // Build the manifest straight from the files we're about to write, so the
+      // confirm list is exactly what hits disk (indices line up 1:1).
+      const entries: ManifestEntry[] = processedFiles.map(f => ({
+        section: f.section,
+        fileName: f.fileName,
+        pageCount: f.pageCount,
+        isMaster: f.section.startsWith('Master ('),
+      }));
 
+      // Probe which target files already exist (File System Access path only;
+      // desktop/download can't, so they show "can't check" in the modal).
+      let existing = new Set<string>();
+      let canDetectExisting = false;
+      let destinationLabel: string | undefined;
       if (window.electronAPI) {
-        const result = await window.electronAPI.savePDFs(electronDir, processedFiles);
-        if (result.success) {
-          setExportProgress('Done!');
-          setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
-        } else {
-          throw new Error(result.error || 'Failed to write files');
-        }
+        destinationLabel = electronDir.split(/[\\/]/).filter(Boolean).pop() || folderName;
       } else if (supportsFileSystemAccess()) {
-        await writeFilesToDirectory(processedFiles, (done, total, name) => {
-          if (exportCancelRef.current) throw new ExportCancelled();
-          setExportProgress(`Writing ${name} (${done + 1}/${total})…`);
-        });
-        setExportProgress('Done!');
-        setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
-      } else {
-        // Older browsers (Safari/Firefox): download each file individually.
-        for (const file of processedFiles) {
-          const blob = new Blob([file.data.buffer as ArrayBuffer], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          // Downloads can't create folders — flatten "org scan/x.pdf".
-          a.download = file.fileName.replace(/\//g, ' - ');
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }
-        setTimeout(() => { setIsExporting(false); setExportProgress(''); }, 1200);
+        canDetectExisting = true;
+        destinationLabel = getOutputDirectoryName() || folderName;
+        if (shouldCancel()) throw new ExportCancelled();
+        setExportProgress('Checking destination…');
+        existing = await probeExistingFiles(entries.map(e => e.fileName));
       }
+
+      const commitMulti = async (resolved: ResolvedFile[]) => {
+        try {
+          setIsExporting(true);
+          exportCancelRef.current = false;
+          const toWrite = resolved.map(r => ({ fileName: r.fileName, data: processedFiles[r.index].data }));
+          if (toWrite.length === 0) { stopExport(); return; }
+          if (shouldCancel()) throw new ExportCancelled();
+          setExportProgress(`Saving ${toWrite.length} file(s)…`);
+
+          if (window.electronAPI) {
+            const result = await window.electronAPI.savePDFs(electronDir, toWrite);
+            if (result.success) finishExport('Done!');
+            else throw new Error(result.error || 'Failed to write files');
+          } else if (supportsFileSystemAccess()) {
+            await writeFilesToDirectory(toWrite, (done, total, name) => {
+              if (exportCancelRef.current) throw new ExportCancelled();
+              setExportProgress(`Writing ${name} (${done + 1}/${total})…`);
+            });
+            finishExport('Done!');
+          } else {
+            // Older browsers (Safari/Firefox): download each file individually.
+            for (const file of toWrite) {
+              const blob = new Blob([file.data.buffer as ArrayBuffer], { type: 'application/pdf' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              // Downloads can't create folders — flatten "org scan/x.pdf".
+              a.download = file.fileName.replace(/\//g, ' - ');
+              document.body.appendChild(a); a.click(); document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }
+            finishExport('Done!');
+          }
+        } catch (error: any) {
+          if (!(error instanceof ExportCancelled)) alert(`Export failed: ${error.message}`);
+          stopExport();
+        }
+      };
+
+      await gateExport(entries, existing, destinationLabel, canDetectExisting, commitMulti);
     } catch (error: any) {
       if (!(error instanceof ExportCancelled)) {
         alert(`Export failed: ${error.message}`);
       }
-      setIsExporting(false);
-      setExportProgress('');
+      stopExport();
     }
   };
 
@@ -835,7 +982,8 @@ export default function App() {
       <header className="app-header">
         <div className="logo-lockup">
           <div className="logo-icon">P</div>
-          <span className="logo-text">PDFPager</span>
+          <span className="logo-text">PDF Splitter</span>
+          <span className="logo-version">V2</span>
         </div>
 
         {queue.length > 0 && (
@@ -883,6 +1031,19 @@ export default function App() {
         {/* Right side — view controls + logout; settings gear is fixed top-right in Workspace */}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, marginRight: pdfFile ? 44 : 8 }}>
           {workspaceChrome && <WorkspaceViewBar chrome={workspaceChrome} />}
+          {pdfFile && hasVaultedOriginal && (
+            <div className="original-vault-chip" title="The untouched original is safely stored. Restore it to discard all edits and start over.">
+              <ShieldCheck size={13} className="original-vault-ok" />
+              <span className="original-vault-label">Original safe</span>
+              <button
+                type="button"
+                className="original-vault-restore"
+                onClick={() => setShowRestoreOriginal(true)}
+              >
+                Restore
+              </button>
+            </div>
+          )}
           <button
             className="btn btn-sm btn-secondary"
             onClick={() => setThemeState(toggleTheme())}
@@ -952,6 +1113,26 @@ export default function App() {
           onScan={() => { setCoverWarn(null); setShowScanModal(true); }}
           onInsertPdf={() => { setCoverWarn(null); insertPdfInputRef.current?.click(); }}
           onClose={() => setCoverWarn(null)}
+        />
+      )}
+
+      {exportPlan && (
+        <ExportConfirmModal
+          entries={exportPlan.entries}
+          existing={exportPlan.existing}
+          collisions={exportPlan.collisions}
+          destinationLabel={exportPlan.destinationLabel}
+          canDetectExisting={exportPlan.canDetectExisting}
+          onConfirm={handleExportConfirm}
+          onClose={handleExportPlanCancel}
+        />
+      )}
+
+      {showRestoreOriginal && pdfFile && (
+        <RestoreOriginalModal
+          fileName={pdfFile.name}
+          onConfirm={() => { setShowRestoreOriginal(false); void restoreOriginal(); }}
+          onClose={() => setShowRestoreOriginal(false)}
         />
       )}
 

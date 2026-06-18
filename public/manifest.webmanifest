@@ -1,6 +1,6 @@
 {
-  "name": "PDFPager",
-  "short_name": "PDFPager",
+  "name": "PDF Splitter",
+  "short_name": "Splitter",
   "description": "Split, tag, clean and export PDF documents — with phone cover scanning.",
   "start_url": "/",
   "scope": "/",

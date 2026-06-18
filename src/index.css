@@ -169,6 +169,7 @@ input[type="text"]:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   background: var(--glass);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -267,6 +268,18 @@ input[type="text"]:focus {
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.01em;
+}
+.logo-version {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  background: var(--accent-light);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-full);
+  padding: 2px 6px;
+  flex-shrink: 0;
 }
 
 .file-chip {
@@ -393,6 +406,44 @@ input[type="text"]:focus {
   background: var(--danger-light);
   border-color: rgba(255,59,48,0.2);
 }
+
+.btn-danger {
+  background: var(--danger);
+  color: white;
+  box-shadow: var(--shadow-xs);
+}
+.btn-danger:hover { filter: brightness(0.94); box-shadow: var(--shadow-sm); }
+.btn-danger:active { filter: brightness(0.88); }
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Header chip: the pristine original is vaulted and can be restored. */
+.original-vault-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  border: 1px solid var(--separator-strong);
+  box-shadow: var(--shadow-xs);
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.original-vault-ok { color: var(--success, #34C759); flex-shrink: 0; }
+.original-vault-label { font-weight: 500; }
+.original-vault-restore {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  background: transparent;
+  font-family: inherit;
+}
+.original-vault-restore:hover { background: var(--accent-light); }
 
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-icon {

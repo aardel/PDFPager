@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { suggestCompletion, listWords } from '../utils/wordStore';
+import { stripUnsafeFileNameChars } from '../utils/tagUtils';
 
 /**
  * Tag entry popup with inline ghost-text autocomplete. As the user types, the
@@ -100,7 +101,7 @@ export const TagPopup: React.FC<TagPopupProps> = ({
           value={value}
           spellCheck={false}
           placeholder="Type a tag…"
-          onChange={(e) => setValue(e.target.value.toUpperCase())}
+          onChange={(e) => setValue(stripUnsafeFileNameChars(e.target.value.toUpperCase()))}
           style={{ textTransform: 'uppercase' }}
           onKeyDown={onKeyDown}
         />

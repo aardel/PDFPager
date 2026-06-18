@@ -5,34 +5,11 @@
  *
  * Each record: { coverId, fileKey, bytes, mime, savedAt }. The session
  * (localStorage) keeps the cover's position/tag and references it by
- * coverId; the bytes live here.
+ * coverId; the bytes live here. The DB handle is shared via idb.ts so the
+ * originals store can coexist in the same database.
  */
 
-const DB_NAME = 'pdfpager';
-const STORE = 'covers';
-
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        const store = db.createObjectStore(STORE, { keyPath: 'coverId' });
-        store.createIndex('fileKey', 'fileKey', { unique: false });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function txDone(tx: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-}
+import { openDb, txDone, COVERS_STORE as STORE } from './idb';
 
 export async function saveCoverImage(
   coverId: string,

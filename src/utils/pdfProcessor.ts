@@ -280,9 +280,9 @@ export async function processAndSplitPDF(
   targetTag?: string,
   onProgress?: (done: number, total: number, fileName: string) => void,
   shouldCancel?: () => boolean
-): Promise<{ fileName: string; data: Uint8Array }[]> {
+): Promise<{ fileName: string; data: Uint8Array; section: string; pageCount: number }[]> {
   const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-  const results: { fileName: string; data: Uint8Array }[] = [];
+  const results: { fileName: string; data: Uint8Array; section: string; pageCount: number }[] = [];
 
   // Filter active pages with valid tags
   const taggedPages = pages.filter(p => 
@@ -332,7 +332,9 @@ export async function processAndSplitPDF(
 
     results.push({
       fileName,
-      data: pdfBytes
+      data: pdfBytes,
+      section: tag,
+      pageCount: pagesForTag.length,
     });
   }
 

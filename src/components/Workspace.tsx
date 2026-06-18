@@ -30,6 +30,7 @@ import {
   getExportFileName,
   isExportNameModified,
   sanitizeExportFileName,
+  stripUnsafeFileNameChars,
   collectUsedTags,
   isNumericTag,
   isIgnoredTag,
@@ -252,6 +253,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   const [renameSectionValue, setRenameSectionValue] = useState('');
   // Re-tag conflict prompt: tagging pages with a tag already used elsewhere.
   const [tagConflict, setTagConflict] = useState<{ tag: string; targets: Set<number> } | null>(null);
+  // Rename conflict prompt: renaming a section to a name already in use, which
+  // would merge the two sections into one export file.
+  const [renameConflict, setRenameConflict] = useState<{ oldTag: string; newName: string } | null>(null);
 
   // Close words panel on outside click
   useEffect(() => {
@@ -794,8 +798,17 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   };
   const commitSectionRename = (oldTag: string) => {
     const v = renameSectionValue.trim();
-    if (v && v !== oldTag) handlePresetRename(oldTag, v);
     setRenamingSection(null);
+    if (!v || v.toLowerCase() === oldTag.toLowerCase()) return; // no-op / pure case change
+    // If the new name already names a DIFFERENT existing section, renaming would
+    // silently merge the two — ask the user instead of guessing.
+    const collides = pages.some(p =>
+      !p.isDeleted && p.tag &&
+      p.tag.toLowerCase() === v.toLowerCase() &&
+      p.tag.toLowerCase() !== oldTag.toLowerCase()
+    );
+    if (collides) { setRenameConflict({ oldTag, newName: v }); return; }
+    handlePresetRename(oldTag, v);
   };
 
   // Stats
@@ -1081,7 +1094,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                         className="sidebar-group-export-input export-name-text"
                         value={exportEditValue}
                         autoFocus
-                        onChange={e => setExportEditValue(e.target.value)}
+                        onChange={e => setExportEditValue(stripUnsafeFileNameChars(e.target.value))}
                         onBlur={() => tag && commitExportNameEdit(tag)}
                         onKeyDown={e => {
                           if (e.key === 'Enter' && tag) commitExportNameEdit(tag);
@@ -1177,7 +1190,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                     value={renameSectionValue}
                     autoFocus
                     onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => setRenameSectionValue(e.target.value)}
+                    onChange={(e) => setRenameSectionValue(stripUnsafeFileNameChars(e.target.value))}
                     onBlur={() => commitSectionRename(tag)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') commitSectionRename(tag);
@@ -1661,6 +1674,44 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                 Create new section “{nextTagVariant(tagConflict.tag)}”
               </button>
               <button className="btn btn-ghost btn-sm" onClick={() => setTagConflict(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename conflict prompt — renaming into an existing section name */}
+      {renameConflict && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setRenameConflict(null)}
+        >
+          <div
+            style={{ background: 'var(--bg-card)', borderRadius: 14, width: 'min(440px, 92vw)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <b style={{ fontSize: 15 }}>A section “{renameConflict.newName}” already exists</b>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.5 }}>
+                Renaming <b>{renameConflict.oldTag}</b> to <b>{renameConflict.newName}</b> would
+                merge both into one export file. Merge them, or keep them separate?
+              </p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => { handlePresetRename(renameConflict.oldTag, renameConflict.newName); setRenameConflict(null); }}
+              >
+                Merge into “{renameConflict.newName}”
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => { handlePresetRename(renameConflict.oldTag, nextTagVariant(renameConflict.newName)); setRenameConflict(null); }}
+              >
+                Keep separate as “{nextTagVariant(renameConflict.newName)}”
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setRenameConflict(null)}>
                 Cancel
               </button>
             </div>

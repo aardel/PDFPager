@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>PDFPager — Scan Cover</title>
+<title>PDF Splitter — Scan Cover</title>
 <style>
   :root {
     --bg: #F2F2F7;
@@ -88,7 +88,7 @@
     <div class="center">
       <div class="big">🔢</div>
       <h2>Enter the pairing code</h2>
-      <p>Open the scan window in PDFPager on the desktop — it shows a 4-digit code.</p>
+      <p>Open the scan window in PDF Splitter on the desktop — it shows a 4-digit code.</p>
       <input id="pinInput" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code"
              style="font-size:34px; letter-spacing:14px; text-align:center; width:210px; padding:10px 0 10px 14px;
                     border:2px solid var(--sep); border-radius:12px; font-family:ui-monospace,monospace;" />
@@ -103,7 +103,7 @@
     <div class="center">
       <div class="big">⚠️</div>
       <h2 class="err">Link expired</h2>
-      <p id="errorMsg">This scan link is no longer valid. Generate a new one from PDFPager on the desktop.</p>
+      <p id="errorMsg">This scan link is no longer valid. Generate a new one from PDF Splitter on the desktop.</p>
     </div>
   </div>
 
@@ -140,14 +140,14 @@
     </div>
     <div class="bar">
       <button class="secondary" onclick="retake()">Retake</button>
-      <button id="uploadBtn" class="primary" onclick="uploadScan()">Send to PDFPager</button>
+      <button id="uploadBtn" class="primary" onclick="uploadScan()">Send to PDF Splitter</button>
     </div>
   </div>
 
   <div id="stage-done" class="stage">
     <div class="center">
       <div class="big">✅</div>
-      <h2>Sent to PDFPager</h2>
+      <h2>Sent to PDF Splitter</h2>
       <p>The cover is on its way to the desktop — adjust the corners there. You can scan another page or close this tab.</p>
     </div>
     <div class="bar">
@@ -401,7 +401,7 @@ async function uploadScan() {
     alert(e.message || 'Upload failed. Check your connection and try again.');
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Send to PDFPager';
+    btn.textContent = 'Send to PDF Splitter';
   }
 }
 

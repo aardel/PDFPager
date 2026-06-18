@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, Plus, Copy } from 'lucide-react';
+import { stripUnsafeFileNameChars } from '../utils/tagUtils';
 
 interface BasicTagsEditorProps {
   presets: string[];
@@ -106,7 +107,7 @@ export const BasicTagsEditor: React.FC<BasicTagsEditorProps> = ({ presets, onSet
                 className="basic-tags-rename-input"
                 value={editValue}
                 autoFocus
-                onChange={e => setEditValue(e.target.value)}
+                onChange={e => setEditValue(stripUnsafeFileNameChars(e.target.value))}
                 onBlur={() => commitRename(idx)}
                 onKeyDown={e => {
                   if (e.key === 'Enter') commitRename(idx);
@@ -137,7 +138,7 @@ export const BasicTagsEditor: React.FC<BasicTagsEditorProps> = ({ presets, onSet
         <input
           type="text"
           value={newTag}
-          onChange={e => setNewTag(e.target.value)}
+          onChange={e => setNewTag(stripUnsafeFileNameChars(e.target.value))}
           placeholder="New section name…"
           style={{ flex: 1, fontSize: 12 }}
         />

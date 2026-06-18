@@ -3,6 +3,18 @@ export function sanitizeExportFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim();
 }
 
+/** Characters that can't appear in a Windows/macOS filename. Tags and export
+ *  names become filenames, so we block these at input time (typing them is
+ *  simply ignored) — that way a tag maps 1:1 to a valid filename and two tags
+ *  can't collapse onto the same name via sanitisation (e.g. "A/B" vs "A:B"). */
+// eslint-disable-next-line no-control-regex
+const UNSAFE_FILENAME_CHARS = /[\\/:*?"<>|\u0000-\u001F]/g;
+
+/** Remove filename-illegal characters from typed input (keeps spaces/casing). */
+export function stripUnsafeFileNameChars(name: string): string {
+  return name.replace(UNSAFE_FILENAME_CHARS, '');
+}
+
 /** Return the export filename base (no .pdf) for a tag group. */
 export function getExportFileName(tag: string, exportNames: Record<string, string>): string {
   const custom = exportNames[tag]?.trim();

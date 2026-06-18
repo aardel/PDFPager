@@ -74,6 +74,34 @@ export function hasOutputDirectory(): boolean {
   return !!dirHandle;
 }
 
+/**
+ * Returns the subset of `fileNames` that ALREADY exist in the chosen output
+ * folder (so the confirm modal can warn before overwriting). Names may carry a
+ * "subdir/file.pdf" prefix; missing intermediate folders simply mean the file
+ * doesn't exist yet. Returns an empty set if no folder is chosen or probing
+ * isn't possible.
+ */
+export async function probeExistingFiles(fileNames: string[]): Promise<Set<string>> {
+  const existing = new Set<string>();
+  if (!dirHandle) return existing;
+  for (const fileName of fileNames) {
+    const parts = fileName.split('/').filter(Boolean);
+    const name = parts.pop();
+    if (!name) continue;
+    try {
+      let dir = dirHandle;
+      for (const part of parts) {
+        dir = await dir.getDirectoryHandle(part); // no create — throws if absent
+      }
+      await dir.getFileHandle(name); // no create — throws NotFoundError if absent
+      existing.add(fileName);
+    } catch {
+      // NotFoundError (or no read permission) — treat as "doesn't exist".
+    }
+  }
+  return existing;
+}
+
 export function getOutputDirectoryName(): string {
   return dirHandle?.name || '';
 }
@@ -115,8 +143,17 @@ export async function writeFilesToDirectory(
   if (!(await ensurePermission(dirHandle))) {
     throw new Error('Permission to write to the selected folder was denied.');
   }
+  // Defense in depth: never let two entries with the same target path silently
+  // overwrite each other within one batch (the confirm modal should already
+  // have resolved collisions, but a logic gap must not cause data loss).
+  const seen = new Set<string>();
   let done = 0;
   for (const file of files) {
+    const dedupeKey = file.fileName.toLowerCase();
+    if (seen.has(dedupeKey)) {
+      throw new Error(`Two files would be saved as "${file.fileName}". Rename one section and try again.`);
+    }
+    seen.add(dedupeKey);
     onProgress?.(done++, files.length, file.fileName);
     const parts = file.fileName.split('/').filter(Boolean);
     const name = parts.pop()!;

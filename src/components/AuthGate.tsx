@@ -71,21 +71,28 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
     return (
       <div style={{
         height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'linear-gradient(135deg, #007AFF 0%, #0051D5 100%)', padding: 20,
+        background: 'radial-gradient(120% 120% at 50% 0%, #2A93FF 0%, #0A6CFF 38%, #0047C2 100%)',
+        padding: 20,
       }}>
         <form onSubmit={submit} style={{
-          background: '#fff', borderRadius: 16, padding: '32px 28px', width: 'min(380px, 100%)',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', gap: 14,
+          background: '#fff', borderRadius: 20, padding: '38px 34px 32px', width: 'min(400px, 100%)',
+          boxShadow: '0 30px 80px rgba(0, 40, 120, 0.35), 0 2px 8px rgba(0,0,0,0.12)',
+          display: 'flex', flexDirection: 'column', gap: 16,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 8, textAlign: 'center' }}>
             <div style={{
-              width: 38, height: 38, borderRadius: 10, background: '#007AFF', color: '#fff',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 20,
-              fontFamily: 'Outfit, sans-serif',
+              width: 60, height: 60, borderRadius: 16,
+              background: 'linear-gradient(150deg, #2A93FF 0%, #0A6CFF 100%)', color: '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 30,
+              fontFamily: 'Outfit, sans-serif', boxShadow: '0 8px 22px rgba(10, 108, 255, 0.45)',
             }}>P</div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 18, fontFamily: 'Outfit, sans-serif' }}>PDFPager</div>
-              <div style={{ fontSize: 12, color: '#6E6E73' }}>Sign in to continue</div>
+              <div style={{ fontWeight: 700, fontSize: 24, fontFamily: 'Outfit, sans-serif', letterSpacing: '-0.02em', color: '#1C1C1E' }}>
+                PDF&nbsp;Splitter
+              </div>
+              <div style={{ fontSize: 13, color: '#6E6E73', marginTop: 4, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 600 }}>
+                Scan · Tag · Split
+              </div>
             </div>
           </div>
 
@@ -128,8 +135,10 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
             type="submit"
             disabled={busy || !username || !password}
             style={{
-              marginTop: 4, padding: '12px', borderRadius: 10, border: 'none', cursor: 'pointer',
-              background: '#007AFF', color: '#fff', fontWeight: 600, fontSize: 15, fontFamily: 'inherit',
+              marginTop: 6, padding: '13px', borderRadius: 12, border: 'none', cursor: 'pointer',
+              background: 'linear-gradient(150deg, #2A93FF 0%, #0A6CFF 100%)', color: '#fff',
+              fontWeight: 600, fontSize: 15, fontFamily: 'inherit',
+              boxShadow: '0 8px 20px rgba(10, 108, 255, 0.35)',
               opacity: busy || !username || !password ? 0.55 : 1,
             }}
           >
