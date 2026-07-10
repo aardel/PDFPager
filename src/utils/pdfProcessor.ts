@@ -35,6 +35,21 @@ export function cropSignature(pages: ProcessedPage[]): string {
 }
 
 /**
+ * Signature of one tag's current page composition — everything that would
+ * change the exported PDF for that section: which pages, in what order
+ * (array order = export order, so NOT sorted), plus rotation/crop. Compared
+ * against the signature recorded at last export to show saved (unchanged)
+ * vs. unsaved (edited since) in the sidebar.
+ */
+export function sectionSignature(tag: string, pages: ProcessedPage[]): string {
+  return JSON.stringify(
+    pages
+      .filter(p => !p.isDeleted && p.tag === tag)
+      .map(p => ({ i: p.pageIndex, r: p.rotation, c: p.crop }))
+  );
+}
+
+/**
  * Returns a copy of the buffer with each page's crop applied as a PDF
  * CropBox. Crops are non-destructive metadata — pdf.js renders within the
  * CropBox and pdf-lib copyPages preserves it, so preview, thumbnails and

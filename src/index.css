@@ -649,6 +649,7 @@ input[type="text"]:focus {
 }
 .sidebar-section-row.deleted .sidebar-section-name { color: var(--danger); }
 .sidebar-section-row.untagged .sidebar-section-name { color: var(--text-secondary); font-weight: 500; }
+.sidebar-section-row.saved .sidebar-section-name { color: var(--success); }
 .sidebar-sections-empty {
   font-size: 12px;
   color: var(--text-tertiary);

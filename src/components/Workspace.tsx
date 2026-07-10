@@ -24,7 +24,7 @@ import { WordListEditor } from './WordListEditor';
 import { TagPopup } from './TagPopup';
 import { PageContextMenu } from './PageContextMenu';
 import type { MainViewMode, WorkspaceChrome } from './workspaceChrome';
-import { ProcessedPage, loadPdfDocument } from '../utils/pdfProcessor';
+import { ProcessedPage, loadPdfDocument, sectionSignature } from '../utils/pdfProcessor';
 import { supportsFileSystemAccess, pickOutputDirectory } from '../utils/fileSystem';
 import {
   getExportFileName,
@@ -64,6 +64,9 @@ interface WorkspaceProps {
   pages: ProcessedPage[];
   presets: string[];
   exportNames: Record<string, string>;
+  /** tag -> signature at last export; compared against the section's current
+   * signature to show it as saved (green) or edited-since-save (red). */
+  savedSignatures: Record<string, string>;
   outputDirectory: string;
   onSetPages: (pages: ProcessedPage[]) => void;
   /** Updates pages without recording undo history (blank auto-detection). */
@@ -110,6 +113,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   pages,
   presets,
   exportNames,
+  savedSignatures,
   outputDirectory,
   onSetPages,
   onSetPagesSilent,
@@ -1172,10 +1176,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({
             const name = isUntagged ? 'Untagged' : isDeleted ? 'Deleted' : tag!;
             const active = sectionGrid?.key === group.key;
             const modified = tag ? isExportNameModified(tag, exportNames) : false;
+            const saved = tag ? savedSignatures[tag] === sectionSignature(tag, pages) : false;
             return (
               <div
                 key={group.key}
-                className={`sidebar-section-row${active ? ' active' : ''}${isDeleted ? ' deleted' : ''}${isUntagged ? ' untagged' : ''}`}
+                className={`sidebar-section-row${active ? ' active' : ''}${isDeleted ? ' deleted' : ''}${isUntagged ? ' untagged' : ''}${saved ? ' saved' : ''}`}
                 onClick={() => {
                   if (renamingSection !== tag) {
                     openSectionGrid(group.key, name, group.entries);

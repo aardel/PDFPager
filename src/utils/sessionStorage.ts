@@ -9,6 +9,11 @@ export interface StoredSession {
   pages: ProcessedPage[];
   exportNames: Record<string, string>;
   savedAt: number;
+  /** tag -> signature of its page composition at the moment it was last
+   * exported to disk. Compared against the section's current signature to
+   * show a saved/unsaved indicator. Absent for sessions saved before this
+   * feature existed — those sections just show as unsaved. */
+  sectionSignatures?: Record<string, string>;
 }
 
 /** Stable key from file metadata (no need to hash the full PDF). */
@@ -40,7 +45,8 @@ export function saveSession(
   fileKey: string,
   fileName: string,
   pages: ProcessedPage[],
-  exportNames: Record<string, string>
+  exportNames: Record<string, string>,
+  sectionSignatures?: Record<string, string>
 ): void {
   const session: StoredSession = {
     fileKey,
@@ -50,6 +56,7 @@ export function saveSession(
     pages,
     exportNames,
     savedAt: Date.now(),
+    sectionSignatures,
   };
   try {
     localStorage.setItem(storageKey(fileKey), JSON.stringify(session));

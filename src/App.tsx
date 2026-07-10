@@ -3,7 +3,7 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { Workspace } from './components/Workspace';
 import { WorkspaceViewBar } from './components/WorkspaceViewBar';
 import type { WorkspaceChrome } from './components/workspaceChrome';
-import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, appendPdfPages, bakeCrops, cropSignature, ProcessedPage, CropRect, ExportCancelled, isAppendedPage } from './utils/pdfProcessor';
+import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, appendPdfPages, bakeCrops, cropSignature, sectionSignature, ProcessedPage, CropRect, ExportCancelled, isAppendedPage } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
 import { InsertPdfModal } from './components/InsertPdfModal';
 import { CoverWarningModal } from './components/CoverWarningModal';
@@ -115,6 +115,9 @@ export default function App() {
   // honoured even if the pre-paint inline script didn't run (stale shell).
   useEffect(() => { setThemeState(applyStoredTheme()); }, []);
   const [exportNames, setExportNames] = useState<Record<string, string>>({});
+  // tag -> composition signature at the moment it was last exported. A
+  // section shows "saved" when its current sectionSignature matches this.
+  const [savedSignatures, setSavedSignatures] = useState<Record<string, string>>({});
   const [outputDirectory, setOutputDirectory] = useState<string>('');
   // Tags whose pages are excluded from the ORG SCAN master. Matched as a
   // case-insensitive substring so an order prefix (e.g. "000 MINUTES") still
@@ -358,14 +361,14 @@ export default function App() {
     const fileKey = activeFileKeyRef.current;
     if (!fileKey || !pdfFile || pages.length === 0) return;
     const timer = setTimeout(() => {
-      saveSession(fileKey, pdfFile.name, pages, exportNames);
+      saveSession(fileKey, pdfFile.name, pages, exportNames, savedSignatures);
     }, 400);
     return () => clearTimeout(timer);
-  }, [pages, exportNames, pdfFile]);
+  }, [pages, exportNames, pdfFile, savedSignatures]);
 
   const saveActiveSession = () => {
     if (pdfFile && activeFileKeyRef.current && pages.length > 0) {
-      saveSession(activeFileKeyRef.current, pdfFile.name, pages, exportNames);
+      saveSession(activeFileKeyRef.current, pdfFile.name, pages, exportNames, savedSignatures);
     }
   };
 
@@ -639,6 +642,7 @@ export default function App() {
         setPdfBuffer(baked);
         setPages(initialPages);
         setExportNames(saved?.exportNames ?? {});
+        setSavedSignatures(saved?.sectionSignatures ?? {});
         setPdfFile(file);
         setActiveKey(fileKey);
       } catch {
@@ -927,6 +931,21 @@ export default function App() {
         existing = await probeExistingFiles(entries.map(e => e.fileName));
       }
 
+      // Record each written section's current composition so it shows as
+      // "saved" (green) until it's edited again. Skips the ORG SCAN master
+      // entry — that's not a tag section.
+      const markSectionsSaved = (resolved: ResolvedFile[]) => {
+        const updates: Record<string, string> = {};
+        for (const r of resolved) {
+          const entry = entries[r.index];
+          if (!entry || entry.isMaster) continue;
+          updates[entry.section] = sectionSignature(entry.section, pages);
+        }
+        if (Object.keys(updates).length > 0) {
+          setSavedSignatures(prev => ({ ...prev, ...updates }));
+        }
+      };
+
       const commitMulti = async (resolved: ResolvedFile[]) => {
         try {
           setIsExporting(true);
@@ -938,13 +957,14 @@ export default function App() {
 
           if (window.electronAPI) {
             const result = await window.electronAPI.savePDFs(electronDir, toWrite);
-            if (result.success) finishExport('Done!');
+            if (result.success) { markSectionsSaved(resolved); finishExport('Done!'); }
             else throw new Error(result.error || 'Failed to write files');
           } else if (supportsFileSystemAccess()) {
             await writeFilesToDirectory(toWrite, (done, total, name) => {
               if (exportCancelRef.current) throw new ExportCancelled();
               setExportProgress(`Writing ${name} (${done + 1}/${total})…`);
             });
+            markSectionsSaved(resolved);
             finishExport('Done!');
           } else {
             // Older browsers (Safari/Firefox): download each file individually.
@@ -958,6 +978,7 @@ export default function App() {
               document.body.appendChild(a); a.click(); document.body.removeChild(a);
               URL.revokeObjectURL(url);
             }
+            markSectionsSaved(resolved);
             finishExport('Done!');
           }
         } catch (error: any) {
@@ -1077,6 +1098,7 @@ export default function App() {
             pages={pages}
             presets={presets}
             exportNames={exportNames}
+            savedSignatures={savedSignatures}
             outputDirectory={outputDirectory}
             onSetPages={handleSetPages}
             onSetPagesSilent={handleSetPagesSilent}
