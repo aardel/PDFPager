@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -355,7 +355,16 @@ export const SectionGridPreview: React.FC<SectionGridPreviewProps> = ({
     ? entries.find(e => e.page.id === activeDragId)
     : null;
 
-  useEffect(() => {
+  // Must run before GridCell's own effect (which creates its IntersectionObserver
+  // using this as `root`) sees its first pass — otherwise every cell briefly
+  // observes against the wrong root (root: null → viewport) and gets torn down
+  // and recreated a tick later. That handoff is a real race: occasionally the
+  // corrected observer's first intersection check doesn't land, leaving a cell
+  // permanently unrendered until the whole grid unmounts/remounts (switching to
+  // Page view and back). useLayoutEffect forces this update to commit — ref and
+  // all — before any passive effect (including GridCell's) runs, so GridCell
+  // only ever sees the real scroll container, never null.
+  useLayoutEffect(() => {
     setScrollRoot(scrollRef.current);
   }, []);
 
