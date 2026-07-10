@@ -10,3 +10,6 @@ Thumbs.db
 
 # Runtime tag-store volume (server-side presets/words)
 data/
+
+# User-uploaded screenshots/sample files shared for debugging — not app code
+Screenshots/

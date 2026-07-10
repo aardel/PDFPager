@@ -15,6 +15,7 @@ import { detectCollisions, type ManifestEntry } from './utils/exportPlan';
 import { getFileKey, loadSession, saveSession, deleteSession } from './utils/sessionStorage';
 import { saveCoverImage, loadCoverImage, loadCoverRaw, pruneCoverImages } from './utils/coverStore';
 import { saveOriginal, loadOriginal, hasOriginal } from './utils/originalStore';
+import { needsDecryption, decryptPdf } from './utils/pdfDecrypt';
 import {
   supportsFileSystemAccess,
   hasOutputDirectory,
@@ -450,12 +451,13 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        const bytes = reader.result as ArrayBuffer;
+        let bytes = reader.result as ArrayBuffer;
+        if (needsDecryption(bytes)) bytes = await decryptPdf(bytes);
         const pageCount = await getPdfPageCount(bytes);
         if (pageCount === 0) throw new Error('The PDF has no pages.');
         setInsertPdfPending({ bytes, name: file.name, pageCount });
       } catch {
-        alert(`Could not read "${file.name}". Please ensure it is a valid, unencrypted PDF.`);
+        alert(`Could not read "${file.name}". Please ensure it is a valid PDF (encrypted PDFs are supported for the empty-password/owner-restricted case).`);
       }
     };
     reader.readAsArrayBuffer(file);
@@ -546,10 +548,23 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        // Feed the original bytes straight to pdf.js — it decrypts standard
-        // encryption natively. (Re-saving through pdf-lib first corrupts
-        // encrypted streams, since pdf-lib can't decrypt them.)
-        const buffer = reader.result as ArrayBuffer;
+        // pdf.js decrypts standard encryption natively for preview, but
+        // pdf-lib (used for export/copy) has no decryption support at all —
+        // it fails later with a cryptic internal error the moment the user
+        // tries to save. Decrypt once up front (empty-user-password Standard
+        // security handler, RC4/AESV2 — the common "owner-restricted, no
+        // password to open" case) so preview, crop baking, and export all
+        // work from a plain buffer from here on.
+        let buffer = reader.result as ArrayBuffer;
+        if (needsDecryption(buffer)) {
+          try {
+            buffer = await decryptPdf(buffer);
+          } catch (decryptErr: any) {
+            console.error('PDF decryption failed:', decryptErr);
+            alert(`This PDF is encrypted and could not be automatically decrypted (${decryptErr.message}). Try removing its password/security in another PDF app first.`);
+            return;
+          }
+        }
         const pageCount = await getPdfPageCount(buffer);
         if (token !== loadTokenRef.current) return; // superseded by a newer switch
         const fileKey = getFileKey(file);
@@ -1026,7 +1041,7 @@ export default function App() {
         <div className="logo-lockup">
           <div className="logo-icon">P</div>
           <span className="logo-text">PDF Splitter</span>
-          <span className="logo-version">V2.1</span>
+          <span className="logo-version">V2.2</span>
         </div>
 
         {queue.length > 0 && (
