@@ -364,9 +364,21 @@ export const SectionGridPreview: React.FC<SectionGridPreviewProps> = ({
   // Page view and back). useLayoutEffect forces this update to commit — ref and
   // all — before any passive effect (including GridCell's) runs, so GridCell
   // only ever sees the real scroll container, never null.
+  //
+  // Re-runs when crossing the empty <-> non-empty boundary (not just on
+  // mount): when entries is empty, the branch below returns early WITHOUT
+  // ever rendering the scrollRef div (see "entries.length === 0" below), so
+  // scrollRef.current is null. SectionGridPreview isn't remounted when you
+  // switch from an empty section (e.g. Untagged hitting 0) straight to a
+  // populated one — it's the same instance, just re-rendered with different
+  // entries — so a mount-only effect would capture that null forever and
+  // every cell's observer would stay rooted at the viewport for the rest of
+  // this instance's life. Depending on the boundary re-captures the real
+  // node the moment it actually exists.
+  const hasNoEntries = entries.length === 0;
   useLayoutEffect(() => {
     setScrollRoot(scrollRef.current);
-  }, []);
+  }, [hasNoEntries]);
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });

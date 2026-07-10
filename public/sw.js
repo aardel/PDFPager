@@ -9,7 +9,7 @@
  *    icons) is network-first with cache fallback, so deploys are picked up
  *    on the next load but the app still opens offline.
  */
-const CACHE = 'pdfpager-v5'; // bump when /vendor/, scan-worker.js, or scan.html change materially
+const CACHE = 'pdfpager-v6'; // bump when /vendor/, scan-worker.js, or scan.html change materially
 
 self.addEventListener('install', () => self.skipWaiting());
 

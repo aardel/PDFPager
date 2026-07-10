@@ -846,7 +846,10 @@ export default function App() {
             URL.revokeObjectURL(url);
             finishExport('Saved ✓');
           } catch (err: any) {
-            if (!(err instanceof ExportCancelled)) alert(`Export failed: ${err.message}`);
+            if (!(err instanceof ExportCancelled)) {
+              console.error('Export failed (single):', err);
+              alert(`Export failed: ${err.message}`);
+            }
             stopExport();
           }
         };
@@ -982,7 +985,10 @@ export default function App() {
             finishExport('Done!');
           }
         } catch (error: any) {
-          if (!(error instanceof ExportCancelled)) alert(`Export failed: ${error.message}`);
+          if (!(error instanceof ExportCancelled)) {
+            console.error('Export failed (multi):', error);
+            alert(`Export failed: ${error.message}`);
+          }
           stopExport();
         }
       };
@@ -990,6 +996,7 @@ export default function App() {
       await gateExport(entries, existing, destinationLabel, canDetectExisting, commitMulti);
     } catch (error: any) {
       if (!(error instanceof ExportCancelled)) {
+        console.error('Export failed (outer):', error);
         alert(`Export failed: ${error.message}`);
       }
       stopExport();
@@ -1004,7 +1011,7 @@ export default function App() {
         <div className="logo-lockup">
           <div className="logo-icon">P</div>
           <span className="logo-text">PDF Splitter</span>
-          <span className="logo-version">V2</span>
+          <span className="logo-version">V2.1</span>
         </div>
 
         {queue.length > 0 && (
