@@ -784,6 +784,21 @@ export default function App() {
     stopExport();
   };
 
+  // pdf-lib throws this exact shape ("Expected instance of X, but got
+  // instance of undefined") when it can't resolve an object it needs while
+  // copying pages — in practice this means the source PDF's cross-reference
+  // table is missing/broken entries for part of its page tree. pdf.js (used
+  // for previews) tolerates that; pdf-lib (used for export) can't recover.
+  // No app-level bug to fix here — surface something actionable instead of
+  // pdf-lib's internal message.
+  const describeExportError = (error: any): string => {
+    const msg = String(error?.message || '');
+    if (/instance of undefined/i.test(msg)) {
+      return 'This PDF has corrupted internal structure (broken page references) that prevents saving, even though it previews fine here. Try opening it in another PDF app (Acrobat, Preview, or a browser) and using "Print to PDF" or "Save As" to produce a clean copy, then reopen that file in PDF Splitter.';
+    }
+    return msg;
+  };
+
   const runExport = async (targetTag?: string) => {
     if (!pdfBuffer || pages.length === 0) return;
 
@@ -848,7 +863,7 @@ export default function App() {
           } catch (err: any) {
             if (!(err instanceof ExportCancelled)) {
               console.error('Export failed (single):', err);
-              alert(`Export failed: ${err.message}`);
+              alert(`Export failed: ${describeExportError(err)}`);
             }
             stopExport();
           }
@@ -987,7 +1002,7 @@ export default function App() {
         } catch (error: any) {
           if (!(error instanceof ExportCancelled)) {
             console.error('Export failed (multi):', error);
-            alert(`Export failed: ${error.message}`);
+            alert(`Export failed: ${describeExportError(error)}`);
           }
           stopExport();
         }
@@ -997,7 +1012,7 @@ export default function App() {
     } catch (error: any) {
       if (!(error instanceof ExportCancelled)) {
         console.error('Export failed (outer):', error);
-        alert(`Export failed: ${error.message}`);
+        alert(`Export failed: ${describeExportError(error)}`);
       }
       stopExport();
     }

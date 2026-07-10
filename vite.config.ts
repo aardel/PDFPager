@@ -8,7 +8,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    sourcemap: true, // TEMP: resolve real stack traces while diagnosing the export bug
+    sourcemap: true, // keep console errors readable for future bug reports — no secrets in a client-only app
   },
   server: {
     port: 5173,
