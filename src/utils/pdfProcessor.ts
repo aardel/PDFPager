@@ -141,6 +141,32 @@ export async function appendPdfPages(
 }
 
 /**
+ * Combines several PDFs (already-decrypted buffers, in the given order)
+ * into a single document — all pages from the first file, then all pages
+ * from the second, and so on. Used by the "Merge PDFs" welcome-screen
+ * action, distinct from normal multi-file open (which queues files as
+ * separate tabs instead).
+ */
+export async function mergePdfBuffers(buffers: ArrayBuffer[]): Promise<ArrayBuffer> {
+  if (buffers.length === 0) throw new Error('No PDFs to merge.');
+  const merged = await PDFDocument.create();
+  for (const buf of buffers) {
+    const src = await PDFDocument.load(buf.slice(0), { ignoreEncryption: true });
+    // pdf-lib can't decrypt — re-saving an encrypted doc here yields
+    // unreadable pages. Callers are expected to decrypt before merging;
+    // this is a defensive backstop, not the primary handling.
+    if (src.isEncrypted) throw new Error('One of the PDFs is encrypted and could not be decrypted automatically.');
+    const count = src.getPageCount();
+    if (count === 0) continue;
+    const copied = await merged.copyPages(src, Array.from({ length: count }, (_, i) => i));
+    for (const page of copied) merged.addPage(page);
+  }
+  if (merged.getPageCount() === 0) throw new Error('None of the selected PDFs have any pages.');
+  const bytes = await merged.save();
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+/**
  * Normalizes a PDF for loading: re-saves it through pdf-lib (ignoring
  * encryption), stripping encryption and rebuilding a clean structure so
  * pdf.js can render documents that otherwise throw. Returns the original

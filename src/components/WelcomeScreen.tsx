@@ -1,16 +1,19 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud } from 'lucide-react';
+import { UploadCloud, Combine } from 'lucide-react';
 
 interface WelcomeScreenProps {
   onFilesSelect: (files: File[]) => void;
+  onMergeFilesSelect: (files: File[]) => void;
+  isMerging?: boolean;
 }
 
 const isPdf = (f: File) =>
   f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf');
 
-export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFilesSelect }) => {
+export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFilesSelect, onMergeFilesSelect, isMerging }) => {
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mergeInputRef = useRef<HTMLInputElement>(null);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -29,6 +32,12 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFilesSelect }) =
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []).filter(isPdf);
     if (files.length > 0) onFilesSelect(files);
+    e.target.value = '';
+  };
+
+  const handleMergeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []).filter(isPdf);
+    if (files.length > 0) onMergeFilesSelect(files);
     e.target.value = '';
   };
 
@@ -59,6 +68,24 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onFilesSelect }) =
           <span className="drop-zone-title">Drop PDFs here</span>
           <span className="drop-zone-sub">or click to browse — multiple files become a queue</span>
         </div>
+
+        <button
+          type="button"
+          className="welcome-merge-btn"
+          disabled={isMerging}
+          onClick={() => mergeInputRef.current?.click()}
+        >
+          <Combine size={14} />
+          {isMerging ? 'Merging…' : 'Merge PDFs into one document…'}
+        </button>
+        <input
+          ref={mergeInputRef}
+          type="file"
+          accept=".pdf"
+          multiple
+          onChange={handleMergeChange}
+          style={{ display: 'none' }}
+        />
       </div>
     </div>
   );

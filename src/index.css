@@ -517,6 +517,31 @@ input[type="text"]:focus {
   color: var(--text-secondary);
 }
 
+.welcome-merge-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 8px 14px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition);
+}
+.welcome-merge-btn:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+.welcome-merge-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 /* ===== Workspace Split Layout ===== */
 .workspace-root {
   flex: 1;

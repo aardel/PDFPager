@@ -3,7 +3,7 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { Workspace } from './components/Workspace';
 import { WorkspaceViewBar } from './components/WorkspaceViewBar';
 import type { WorkspaceChrome } from './components/workspaceChrome';
-import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, appendPdfPages, bakeCrops, cropSignature, sectionSignature, ProcessedPage, CropRect, ExportCancelled, isAppendedPage } from './utils/pdfProcessor';
+import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, appendPdfPages, mergePdfBuffers, bakeCrops, cropSignature, sectionSignature, ProcessedPage, CropRect, ExportCancelled, isAppendedPage } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
 import { InsertPdfModal } from './components/InsertPdfModal';
 import { CoverWarningModal } from './components/CoverWarningModal';
@@ -137,6 +137,7 @@ export default function App() {
   };
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState('');
+  const [isMerging, setIsMerging] = useState(false);
   // Set when an export is paused on the "MINUTES has no cover" warning; holds
   // the section being exported (undefined = full export) so it can resume.
   const [coverWarn, setCoverWarn] = useState<{ targetTag?: string } | null>(null);
@@ -173,11 +174,14 @@ export default function App() {
   // Mobile cover scanning
   const [showScanModal, setShowScanModal] = useState(false);
 
-  // Insert external PDF at top of a tag section
+  // Insert external PDF(s) at top of a tag section. Multi-select repeats the
+  // same single-file preview/confirm modal once per file, in order — queued
+  // files wait in insertPdfQueueRef and get picked up as each one resolves.
   const insertPdfInputRef = useRef<HTMLInputElement>(null);
   const [insertPdfPending, setInsertPdfPending] = useState<{
     bytes: ArrayBuffer; name: string; pageCount: number;
   } | null>(null);
+  const insertPdfQueueRef = useRef<File[]>([]);
 
   // Undo/redo history for page mutations (delete, rotate, tag, reorder).
   // Snapshots are just the pages array (small metadata objects, no canvases),
@@ -458,9 +462,26 @@ export default function App() {
         setInsertPdfPending({ bytes, name: file.name, pageCount });
       } catch {
         alert(`Could not read "${file.name}". Please ensure it is a valid PDF (encrypted PDFs are supported for the empty-password/owner-restricted case).`);
+        processNextQueuedInsertPdf();
       }
     };
     reader.readAsArrayBuffer(file);
+  };
+
+  // Multi-select entry point: process one file's preview/confirm at a time,
+  // queuing the rest — advances to the next queued file whether the current
+  // one is inserted or cancelled, so one bad/cancelled file doesn't stop the
+  // batch.
+  const handleInsertPdfFilesSelect = (files: File[]) => {
+    const pdfs = files.filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    if (pdfs.length === 0) return;
+    insertPdfQueueRef.current = pdfs.slice(1);
+    handleInsertPdfFileSelect(pdfs[0]);
+  };
+
+  const processNextQueuedInsertPdf = () => {
+    const next = insertPdfQueueRef.current.shift();
+    if (next) handleInsertPdfFileSelect(next);
   };
 
   // Sets/clears a page's crop. The rebake effect picks up the metadata change
@@ -666,6 +687,31 @@ export default function App() {
       }
     };
     reader.readAsArrayBuffer(file);
+  };
+
+  // Combines multiple selected files into ONE document (in selection order)
+  // instead of the normal multi-open queue — a separate, explicit action
+  // from the welcome screen. Reuses the normal open path afterwards (queue +
+  // session + decrypt-on-open all apply the same way to the merged result).
+  const handleMergeFilesSelect = async (files: File[]) => {
+    if (files.length === 0) return;
+    setIsMerging(true);
+    try {
+      const buffers: ArrayBuffer[] = [];
+      for (const file of files) {
+        let bytes = await file.arrayBuffer();
+        if (needsDecryption(bytes)) bytes = await decryptPdf(bytes);
+        buffers.push(bytes);
+      }
+      const merged = await mergePdfBuffers(buffers);
+      const name = files.length === 1 ? files[0].name : `Merged (${files.length} files).pdf`;
+      const mergedFile = new File([merged], name, { type: 'application/pdf' });
+      handleFilesSelect([mergedFile]);
+    } catch (err: any) {
+      alert(`Could not merge these PDFs: ${err.message}`);
+    } finally {
+      setIsMerging(false);
+    }
   };
 
   // Adds PDFs to the queue (deduped by file identity) and activates the
@@ -1127,7 +1173,7 @@ export default function App() {
       {/* Main content */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {!pdfFile || !pdfBuffer ? (
-          <WelcomeScreen onFilesSelect={handleFilesSelect} />
+          <WelcomeScreen onFilesSelect={handleFilesSelect} onMergeFilesSelect={handleMergeFilesSelect} isMerging={isMerging} />
         ) : (
           <Workspace
             pdfFile={pdfFile}
@@ -1207,11 +1253,12 @@ export default function App() {
         ref={insertPdfInputRef}
         type="file"
         accept=".pdf,application/pdf"
+        multiple
         style={{ display: 'none' }}
         onChange={(e) => {
-          const file = e.target.files?.[0];
+          const files = Array.from(e.target.files ?? []);
           e.target.value = '';
-          if (file) handleInsertPdfFileSelect(file);
+          if (files.length > 0) handleInsertPdfFilesSelect(files);
         }}
       />
 
@@ -1223,8 +1270,12 @@ export default function App() {
           onInsert={async (tag) => {
             await handleInsertPdf(insertPdfPending.bytes, tag);
             setInsertPdfPending(null);
+            processNextQueuedInsertPdf();
           }}
-          onClose={() => setInsertPdfPending(null)}
+          onClose={() => {
+            setInsertPdfPending(null);
+            processNextQueuedInsertPdf();
+          }}
         />
       )}
 
