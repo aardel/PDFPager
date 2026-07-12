@@ -41,6 +41,7 @@ import {
   RotateCw,
   RotateCcw,
   Crop,
+  Type as TypeIcon,
   Scan,
   FilePlus,
   Trash2,
@@ -88,6 +89,7 @@ interface WorkspaceProps {
   exportProgress: string;
   onCancelExport: () => void;
   onRequestCrop: (pageId: number) => void;
+  onRequestTextEdit: (pageId: number) => void;
   onReadjustCover: (pageId: number) => void;
   onChromeChange?: (chrome: WorkspaceChrome | null) => void;
 }
@@ -134,6 +136,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   exportProgress,
   onCancelExport,
   onRequestCrop,
+  onRequestTextEdit,
   onReadjustCover,
   onChromeChange,
 }) => {
@@ -1348,6 +1351,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({
               disabled={!activePage || activePage.isDeleted}
             >
               <Crop size={15} />
+            </button>
+            <button
+              className="btn-icon"
+              title="Edit text"
+              onClick={() => activePage && onRequestTextEdit(activePage.id)}
+              disabled={!activePage || activePage.isDeleted}
+            >
+              <TypeIcon size={15} />
             </button>
             {activePage?.isCover && (
               <button

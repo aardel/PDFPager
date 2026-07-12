@@ -10,6 +10,26 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 // MediaBox, top-left origin (image-style). Undefined = no crop (full page).
 export interface CropRect { x: number; y: number; w: number; h: number }
 
+// One "cover the original run with a patch, draw the replacement on top"
+// text edit — not a true content-stream edit (see utils/textEdit.ts for why).
+// Position/size are captured in PDF user-space (unrotated page coordinates)
+// at the moment of editing, from pdf.js's TextItem, so baking never needs to
+// re-run text extraction.
+export interface TextEdit {
+  id: string;
+  originalText: string;
+  newText: string;
+  x: number; y: number;         // baseline origin
+  width: number; height: number; // original run's bounding box (cover patch size)
+  fontSize: number;
+  // pdf.js's TextStyle.fontFamily hint (e.g. "serif"/"sans-serif"/a family
+  // name) — not a PDF resource key. pdf.js doesn't expose which /Resources
+  // /Font entry a run actually used, so bake time picks by glyph coverage
+  // across the page's fonts instead (see utils/textEdit.ts); this hint only
+  // steers the on-screen editor font and the standard-font fallback choice.
+  fontFamilyHint?: string;
+}
+
 export interface ProcessedPage {
   id: number;          // Unique ID
   pageIndex: number;   // 0-indexed page in original PDF
@@ -22,6 +42,7 @@ export interface ProcessedPage {
   isInserted?: boolean; // PDF page(s) appended from an external file (not in the original)
   insertId?: string;   // Key of the source PDF bytes in IndexedDB (persists across reloads)
   crop?: CropRect;     // Optional rectangular crop, applied as a PDF CropBox
+  textEdits?: TextEdit[]; // Cover-and-replace text edits (see utils/textEdit.ts)
 }
 
 /** Stable signature of the crop set, for deciding when a re-bake is needed. */
@@ -30,6 +51,16 @@ export function cropSignature(pages: ProcessedPage[]): string {
     pages
       .filter(p => p.crop)
       .map(p => ({ i: p.pageIndex, c: p.crop }))
+      .sort((a, b) => a.i - b.i)
+  );
+}
+
+/** Stable signature of the text-edit set, for deciding when a re-bake is needed. */
+export function textEditSignature(pages: ProcessedPage[]): string {
+  return JSON.stringify(
+    pages
+      .filter(p => p.textEdits?.length)
+      .map(p => ({ i: p.pageIndex, e: p.textEdits }))
       .sort((a, b) => a.i - b.i)
   );
 }
@@ -45,7 +76,7 @@ export function sectionSignature(tag: string, pages: ProcessedPage[]): string {
   return JSON.stringify(
     pages
       .filter(p => !p.isDeleted && p.tag === tag)
-      .map(p => ({ i: p.pageIndex, r: p.rotation, c: p.crop }))
+      .map(p => ({ i: p.pageIndex, r: p.rotation, c: p.crop, t: p.textEdits }))
   );
 }
 

@@ -3,11 +3,12 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { Workspace } from './components/Workspace';
 import { WorkspaceViewBar } from './components/WorkspaceViewBar';
 import type { WorkspaceChrome } from './components/workspaceChrome';
-import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, appendPdfPages, mergePdfBuffers, bakeCrops, cropSignature, sectionSignature, ProcessedPage, CropRect, ExportCancelled, isAppendedPage } from './utils/pdfProcessor';
+import { getPdfPageCount, processAndSplitPDF, buildCleanedDocument, appendImagePage, appendPdfPages, mergePdfBuffers, bakeCrops, cropSignature, sectionSignature, textEditSignature, ProcessedPage, CropRect, TextEdit, ExportCancelled, isAppendedPage } from './utils/pdfProcessor';
 import { ScanCoverModal } from './components/ScanCoverModal';
 import { InsertPdfModal } from './components/InsertPdfModal';
 import { CoverWarningModal } from './components/CoverWarningModal';
 import { CropModal } from './components/CropModal';
+import { TextEditModal } from './components/TextEditModal';
 import { ExportConfirmModal, type ResolvedFile } from './components/ExportConfirmModal';
 import { RestoreOriginalModal } from './components/RestoreOriginalModal';
 import { filterBasicPresets, getExportFileName, sanitizeExportFileName } from './utils/tagUtils';
@@ -16,6 +17,7 @@ import { getFileKey, loadSession, saveSession, deleteSession } from './utils/ses
 import { saveCoverImage, loadCoverImage, loadCoverRaw, pruneCoverImages } from './utils/coverStore';
 import { saveOriginal, loadOriginal, hasOriginal } from './utils/originalStore';
 import { needsDecryption, decryptPdf } from './utils/pdfDecrypt';
+import { bakeTextEdits } from './utils/textEdit';
 import {
   supportsFileSystemAccess,
   hasOutputDirectory,
@@ -105,6 +107,7 @@ export default function App() {
   const sourceBufferRef = useRef<ArrayBuffer | null>(null);
   useEffect(() => { sourceBufferRef.current = sourceBuffer; }, [sourceBuffer]);
   const [cropTargetId, setCropTargetId] = useState<number | null>(null);
+  const [textEditTargetId, setTextEditTargetId] = useState<number | null>(null);
   const [pages, setPages] = useState<ProcessedPage[]>([]);
   const [presets, setPresets] = useState<string[]>([]);
   // Mirror of `presets` so the word-change subscriber can push the current
@@ -195,24 +198,28 @@ export default function App() {
   const pagesRef = useRef<ProcessedPage[]>([]);
   useEffect(() => { pagesRef.current = pages; }, [pages]);
 
-  // Re-bake crops into pdfBuffer whenever the source buffer or the crop set
-  // changes (covers undo/redo and crop edits alike). loadFile bakes inline
-  // and records the key here so this effect doesn't redundantly re-bake on
-  // first load.
+  // Re-bake crops + text edits into pdfBuffer whenever the source buffer,
+  // crop set, or text-edit set changes (covers undo/redo and edits alike).
+  // loadFile bakes inline and records the key here so this effect doesn't
+  // redundantly re-bake on first load.
   const cropSig = useMemo(() => cropSignature(pages), [pages]);
+  const textEditSig = useMemo(() => textEditSignature(pages), [pages]);
+  const bakeSig = `${cropSig}|${textEditSig}`;
   const lastBakeRef = useRef<{ src: ArrayBuffer | null; sig: string }>({ src: null, sig: '' });
   useEffect(() => {
     if (!sourceBuffer) return;
-    if (lastBakeRef.current.src === sourceBuffer && lastBakeRef.current.sig === cropSig) return;
+    if (lastBakeRef.current.src === sourceBuffer && lastBakeRef.current.sig === bakeSig) return;
     let alive = true;
     (async () => {
-      const baked = await bakeCrops(sourceBuffer, pagesRef.current);
+      const cropped = await bakeCrops(sourceBuffer, pagesRef.current);
       if (!alive) return;
-      lastBakeRef.current = { src: sourceBuffer, sig: cropSig };
+      const { buffer: baked } = await bakeTextEdits(cropped, pagesRef.current);
+      if (!alive) return;
+      lastBakeRef.current = { src: sourceBuffer, sig: bakeSig };
       setPdfBuffer(baked);
     })();
     return () => { alive = false; };
-  }, [sourceBuffer, cropSig]);
+  }, [sourceBuffer, bakeSig]);
 
   const resetHistory = () => {
     historyRef.current = [];
@@ -494,6 +501,16 @@ export default function App() {
     setCropTargetId(null);
   }, [handleSetPages]);
 
+  // Replaces a page's text-edit set wholesale (the modal hands back its full
+  // accumulated list). Same rebake-effect pickup as crop.
+  const handleSaveTextEdits = useCallback((pageId: number, edits: TextEdit[]) => {
+    const next = pagesRef.current.map(p =>
+      p.id === pageId ? { ...p, textEdits: edits.length ? edits : undefined } : p
+    );
+    handleSetPages(next);
+    setTextEditTargetId(null);
+  }, [handleSetPages]);
+
   // Re-adjust the perspective of an already-inserted cover using its stored
   // raw capture. Opens the corner editor (ScanCoverModal in seed mode).
   const [readjust, setReadjust] = useState<
@@ -552,7 +569,7 @@ export default function App() {
       }));
       const baked = await bakeCrops(buffer, freshPages);
       resetHistory();
-      lastBakeRef.current = { src: buffer, sig: cropSignature(freshPages) };
+      lastBakeRef.current = { src: buffer, sig: `${cropSignature(freshPages)}|${textEditSignature(freshPages)}` };
       setSourceBuffer(buffer);
       setPdfBuffer(baked);
       setPages(freshPages);
@@ -665,15 +682,17 @@ export default function App() {
           pruneCoverImages(fileKey, new Set()).catch(() => {});
         }
 
-        // Bake any saved crops inline so the workspace opens already-cropped
-        // (no blank-buffer flash), and record the key so the rebake effect
-        // doesn't immediately re-bake the same thing.
-        const baked = await bakeCrops(workingBuffer, initialPages);
+        // Bake any saved crops + text edits inline so the workspace opens
+        // already-edited (no blank-buffer flash), and record the key so the
+        // rebake effect doesn't immediately re-bake the same thing.
+        const cropBaked = await bakeCrops(workingBuffer, initialPages);
+        if (token !== loadTokenRef.current) return;
+        const { buffer: baked } = await bakeTextEdits(cropBaked, initialPages);
         if (token !== loadTokenRef.current) return;
 
         activeFileKeyRef.current = fileKey;
         resetHistory();
-        lastBakeRef.current = { src: workingBuffer, sig: cropSignature(initialPages) };
+        lastBakeRef.current = { src: workingBuffer, sig: `${cropSignature(initialPages)}|${textEditSignature(initialPages)}` };
         setSourceBuffer(workingBuffer);
         setPdfBuffer(baked);
         setPages(initialPages);
@@ -1087,7 +1106,7 @@ export default function App() {
         <div className="logo-lockup">
           <div className="logo-icon">P</div>
           <span className="logo-text">PDF Splitter</span>
-          <span className="logo-version">V2.2</span>
+          <span className="logo-version">V2.3</span>
         </div>
 
         {queue.length > 0 && (
@@ -1199,6 +1218,7 @@ export default function App() {
             onScanCover={() => setShowScanModal(true)}
             onInsertPdf={() => insertPdfInputRef.current?.click()}
             onRequestCrop={(pageId) => setCropTargetId(pageId)}
+            onRequestTextEdit={(pageId) => setTextEditTargetId(pageId)}
             onReadjustCover={handleReadjustCover}
             onChromeChange={setWorkspaceChrome}
             isExporting={isExporting}
@@ -1304,6 +1324,21 @@ export default function App() {
             initialCrop={page.crop ?? null}
             onApply={(crop) => handleCropPage(cropTargetId, crop)}
             onClose={() => setCropTargetId(null)}
+          />
+        );
+      })()}
+
+      {textEditTargetId != null && sourceBuffer && (() => {
+        const page = pages.find(p => p.id === textEditTargetId);
+        if (!page) return null;
+        return (
+          <TextEditModal
+            sourceBuffer={sourceBuffer}
+            pageIndex={page.pageIndex}
+            rotation={page.rotation}
+            existingEdits={page.textEdits ?? []}
+            onSave={(edits) => handleSaveTextEdits(textEditTargetId, edits)}
+            onClose={() => setTextEditTargetId(null)}
           />
         );
       })()}
